@@ -1,0 +1,34 @@
+name: Stoloto KENO sync
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/stoloto-sync.yml'
+      - 'scripts/sync-stoloto.mjs'
+  schedule:
+    - cron: '*/10 * * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      STOLOTOLOGIN: ${{ secrets.STOLOTOLOGIN }}
+      STOLOTOPASSWORD: ${{ secrets.STOLOTOPASSWORD }}
+      SUPABASE_URL: https://advffbbmeylxroxyoltt.supabase.co
+      SUPABASE_ANON_JWT: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImFkdmZmYmJtZXlseHJveHlvbHR0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA1MjQzODUsImV4cCI6MjEwNjEwMDM4NX0.onqk4nSuM00Sjr5Cr2dho_27LOYwSbGNzZBzK4efnoA
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Playwright
+        run: |
+          npm install --no-save playwright@1.55.0
+          npx playwright install --with-deps chromium
+      - name: Sync latest completed KENO draw
+        run: node scripts/sync-stoloto.mjs
