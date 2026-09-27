@@ -1,0 +1,9 @@
+{
+  "name": "Virtus Dei est",
+  "short_name": "Virtus Dei",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#07111b",
+  "theme_color": "#07111b",
+  "lang": "ru"
+}
