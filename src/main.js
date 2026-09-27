@@ -3,7 +3,7 @@ import { uploadScreenshot } from './services/storage.js'
 import { createPendingRecognition, recognizeScreenshot } from './services/recognition.js'
 import { supabaseConfigured } from './supabase.js'
 
-const state = { screenshots: [] }
+const state = { screenshots: [], selectedId: null }
 const app = document.querySelector('#app')
 app.innerHTML = `
 <div class="shell">
@@ -24,6 +24,7 @@ app.innerHTML = `
 const fileInput = document.querySelector('#fileInput')
 fileInput.addEventListener('change', async (e) => {
   const files = [...e.target.files]
+  fileInput.disabled = true
   document.querySelector('#processing').textContent = files.length ? `Обработка ${files.length}…` : ''
 
   for (const file of files) {
@@ -41,7 +42,12 @@ fileInput.addEventListener('change', async (e) => {
 
     try {
       item.upload = await uploadScreenshot(file)
+    } catch (err) {
+      item.upload = {mode:'local',error:err.message||String(err)}
+    }
+    try {
       item.recognition = await recognizeScreenshot(file, item.upload.screenshot_id)
+      if(item.upload.error) item.recognition.message += ` Файл остался в текущем окне: загрузка в облако не выполнена (${item.upload.error}).`
     } catch (err) {
       console.error(err)
       item.recognition = {
@@ -52,10 +58,12 @@ fileInput.addEventListener('change', async (e) => {
       }
     }
     renderShots()
+    if (!state.selectedId || state.selectedId === item.id) showDetail(item.id)
   }
 
   document.querySelector('#processing').textContent = ''
   e.target.value = ''
+  fileInput.disabled = false
 })
 
 function renderShots() {
@@ -73,7 +81,7 @@ function renderShots() {
 }
 
 function statusText(s) {
-  if (s.recognition.status === 'verified') return `✅ 10/10 · ${s.upload.mode === 'cloud' ? '☁ сохранён' : 'локально'}`
+  if (s.recognition.status === 'verified') return `✅ 10/10 · ${s.upload.mode === 'cloud' && s.recognition.saved !== false ? '☁ сохранён' : 'локально'}`
   if (s.recognition.status === 'review') return `⚠ проверить · найдено ${s.recognition.numbers.length}`
   if (s.recognition.status === 'error') return '❌ ошибка'
   return '⏳ обработка'
@@ -82,6 +90,8 @@ function statusText(s) {
 function showDetail(id) {
   const s = state.screenshots.find(x=>x.id===id)
   if(!s) return
+  state.selectedId = id
   const nums = s.recognition.numbers?.length ? `<div class="recognizedNums">${s.recognition.numbers.map(n=>`<span>${n}</span>`).join('')}</div>` : ''
-  document.querySelector('#detail').innerHTML = `<img class="preview" src="${s.localUrl}"><div class="status ${s.recognition.status}">${statusText(s)}</div>${nums}<p>${s.recognition.message}</p>`
+  document.querySelector('#detail').innerHTML = `<img class="preview" src="${s.localUrl}"><div class="status ${s.recognition.status}">${statusText(s)}</div>${nums}<p class="recognition-message"></p>`
+  document.querySelector('.recognition-message').textContent = s.recognition.message
 }

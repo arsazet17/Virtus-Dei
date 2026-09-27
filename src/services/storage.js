@@ -1,4 +1,5 @@
-import { supabase, supabaseConfigured } from '../supabase.js'
+import { invokeFunction } from './functions.js'
+import { supabaseConfigured } from '../supabase.js'
 
 export async function uploadScreenshot(file, drawId = 'pending') {
   if (!supabaseConfigured) return { mode: 'demo', path: null, error: null }
@@ -10,8 +11,8 @@ export async function uploadScreenshot(file, drawId = 'pending') {
     form.append('target_draw_number', String(drawId))
   }
 
-  const { data, error } = await supabase.functions.invoke('screenshot-upload', { body: form })
-  if (error) throw error
+  const data = await invokeFunction('screenshot-upload', form)
+
   if (!data?.ok) throw new Error(data?.error || 'Upload failed')
   return data
 }
