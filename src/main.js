@@ -8,10 +8,11 @@ const app = document.querySelector('#app')
 app.innerHTML = `
 <div class="shell">
   <aside class="sidebar">
-    <div class="brand"><div class="crown">♛</div><b>Virtus Dei est</b><small>id est nobis</small></div>
+    <div class="brand"><img class="brand-icon" src="${import.meta.env.BASE_URL}icons/virtus-dei-512.png" alt="Virtus Dei est — id est nobis" width="156" height="156"><b>Virtus Dei est</b><small>id est nobis</small></div>
     <button class="nav active">Главная</button><button class="nav">Загрузка</button><button class="nav">Скриншоты</button><button class="nav">Сравнение</button><button class="nav">Анализ и обучение</button><button class="nav">Архив</button>
   </aside>
   <main>
+    <div class="mobile-brand"><img src="${import.meta.env.BASE_URL}icons/virtus-dei-192.png" alt="" width="64" height="64"><div><b>Virtus Dei est</b><small>id est nobis</small></div></div>
     <header><div><small>Следующий тираж</small><h2>Ожидается</h2></div><div class="cloud ${supabaseConfigured ? 'ok' : 'warn'}">${supabaseConfigured ? '● Облако подключено' : '○ Облако не подключено'}</div></header>
     <section class="hero"><div><h1>Скриншоты «Случайные числа»</h1><p>Загружайте любое количество скриншотов до тиража. Ограничения по количеству нет.</p></div><label class="uploadBtn">+ Загрузить скриншоты<input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden></label></section>
     <section class="stats"><div class="card"><small>Загружено</small><strong id="count">0</strong><span>скриншотов</span></div><div class="card"><small>Распознано</small><strong id="recognized">0</strong><span>VERIFIED 10/10</span></div><div class="card"><small>Хранилище</small><strong>${supabaseConfigured ? 'Cloud' : 'Setup'}</strong><span>${supabaseConfigured ? 'Supabase' : 'нужно подключить'}</span></div></section>
