@@ -1,0 +1,50 @@
+import './style.css'
+import { uploadScreenshot } from './services/storage.js'
+import { createPendingRecognition } from './services/recognition.js'
+import { supabaseConfigured } from './supabase.js'
+
+const state = { screenshots: [] }
+const app = document.querySelector('#app')
+app.innerHTML = `
+<div class="shell">
+  <aside class="sidebar">
+    <div class="brand"><div class="crown">♛</div><b>Virtus Dei est</b><small>id est nobis</small></div>
+    <button class="nav active">Главная</button><button class="nav">Загрузка</button><button class="nav">Скриншоты</button><button class="nav">Сравнение</button><button class="nav">Анализ и обучение</button><button class="nav">Архив</button>
+  </aside>
+  <main>
+    <header><div><small>Следующий тираж</small><h2>Ожидается</h2></div><div class="cloud ${supabaseConfigured ? 'ok' : 'warn'}">${supabaseConfigured ? '● Облако подключено' : '○ Облако не подключено'}</div></header>
+    <section class="hero"><div><h1>Скриншоты «Случайные числа»</h1><p>Загружайте любое количество скриншотов до тиража. Ограничения по количеству нет.</p></div><label class="uploadBtn">+ Загрузить скриншоты<input id="fileInput" type="file" accept="image/*" multiple hidden></label></section>
+    <section class="stats"><div class="card"><small>Загружено</small><strong id="count">0</strong><span>скриншотов</span></div><div class="card"><small>Распознано</small><strong id="recognized">0</strong><span>без ошибок</span></div><div class="card"><small>Хранилище</small><strong>${supabaseConfigured ? 'Cloud' : 'Setup'}</strong><span>${supabaseConfigured ? 'Supabase' : 'нужно подключить'}</span></div></section>
+    <section class="workspace"><div class="panel grow"><div class="panelHead"><h3>Скриншоты текущего тиража</h3><span id="processing"></span></div><div id="shots" class="shots empty">Пока нет загруженных скриншотов</div></div><div class="panel detail"><h3>Просмотр</h3><div id="detail" class="detailEmpty">Выберите скриншот</div></div></section>
+    <section class="panel process"><h3>Движок обучения</h3><div class="steps"><div><b>1</b><span>Скриншоты до тиража</span></div><i>→</i><div><b>2</b><span>Распознавание 10 чисел</span></div><i>→</i><div><b>3</b><span>Фактический тираж</span></div><i>→</i><div><b>4</b><span>Зелёные совпадения</span></div><i>→</i><div><b>5</b><span>Обучение и «уход»</span></div></div><p class="note">После выхода тиража совпавшие числа отмечаются зелёной галочкой. Отдельно сохраняется, какие выпавшие числа отсутствовали во всей предложке.</p></section>
+  </main>
+</div>`
+
+const fileInput = document.querySelector('#fileInput')
+fileInput.addEventListener('change', async (e) => {
+  const files = [...e.target.files]
+  document.querySelector('#processing').textContent = files.length ? `Обработка ${files.length}…` : ''
+  for (const file of files) {
+    const localUrl = URL.createObjectURL(file)
+    let upload = { mode: 'demo' }
+    try { upload = await uploadScreenshot(file) } catch (err) { console.error(err) }
+    state.screenshots.push({ id: crypto.randomUUID(), file, localUrl, upload, recognition: createPendingRecognition(file), createdAt: new Date().toISOString() })
+  }
+  document.querySelector('#processing').textContent = ''
+  renderShots(); e.target.value = ''
+})
+
+function renderShots() {
+  document.querySelector('#count').textContent = state.screenshots.length
+  document.querySelector('#recognized').textContent = state.screenshots.filter(s => s.recognition.status === 'verified').length
+  const box = document.querySelector('#shots')
+  if (!state.screenshots.length) { box.className='shots empty'; box.textContent='Пока нет загруженных скриншотов'; return }
+  box.className='shots'
+  box.innerHTML = state.screenshots.map((s,i)=>`<button class="shot" data-id="${s.id}"><img src="${s.localUrl}" alt=""><div><b>Скриншот №${i+1}</b><small>${new Date(s.createdAt).toLocaleTimeString('ru-RU')}</small><em>${s.upload.mode === 'cloud' ? '☁ сохранён' : '○ локальный просмотр'}</em></div></button>`).join('')
+  box.querySelectorAll('.shot').forEach(btn => btn.onclick=()=>showDetail(btn.dataset.id))
+}
+
+function showDetail(id) {
+  const s = state.screenshots.find(x=>x.id===id); if(!s) return
+  document.querySelector('#detail').innerHTML = `<img class="preview" src="${s.localUrl}"><div class="status pending">OCR: ожидает подключения</div><p>${s.recognition.message}</p>`
+}
