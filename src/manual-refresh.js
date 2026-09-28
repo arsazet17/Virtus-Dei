@@ -1,4 +1,4 @@
-const APP_VERSION = '0.2.5'
+const APP_VERSION = '0.2.6'
 const REFRESH_FLAG = 'virtus.manualRefresh.v1'
 
 function ensureRefreshUi() {
@@ -90,7 +90,6 @@ observer.observe(document.documentElement, { subtree: true, childList: true })
 ensureRefreshUi()
 showUpdatedMark()
 
-// Убираем только технический cache-buster из адресной строки после успешного запуска.
 if (new URL(window.location.href).searchParams.has('_refresh')) {
   const clean = new URL(window.location.href)
   clean.searchParams.delete('_refresh')
