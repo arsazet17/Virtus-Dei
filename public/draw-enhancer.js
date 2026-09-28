@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = 'draw-layout-v2';
+  const VERSION = 'draw-layout-v3';
   let scheduled = false;
   let initialRedirectDone = false;
 
@@ -14,6 +14,19 @@
     const d = new Date(ms);
     return `${pad(d.getUTCDate())}.${pad(d.getUTCMonth() + 1)}.${d.getUTCFullYear()} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
   };
+
+  function isMobileLike() {
+    const ua = navigator.userAgent || '';
+    const android = /Android|Huawei|HUAWEI|HarmonyOS|Mobile/i.test(ua);
+    const coarse = window.matchMedia?.('(pointer: coarse)').matches;
+    const touch = (navigator.maxTouchPoints || 0) > 0;
+    const narrowScreen = Math.min(screen.width || 9999, screen.height || 9999) <= 1200;
+    return window.innerWidth <= 850 || android || coarse || (touch && narrowScreen);
+  }
+
+  function markDeviceMode() {
+    document.body.classList.toggle('reference-mobile', isMobileLike());
+  }
 
   function statsFor(numbers) {
     const sum = numbers.reduce((a, b) => a + b, 0);
@@ -41,7 +54,7 @@
   }
 
   function ensureBottomNav() {
-    if (window.innerWidth > 850) {
+    if (!isMobileLike()) {
       document.querySelector('.reference-bottom-nav')?.remove();
       return;
     }
@@ -130,7 +143,7 @@
   }
 
   function useReferenceAsMobileHome() {
-    if (window.innerWidth > 850 || initialRedirectDone) return;
+    if (!isMobileLike() || initialRedirectDone) return;
     const dashboard = document.querySelector('.current-cycle');
     if (!dashboard) return;
     initialRedirectDone = true;
@@ -148,6 +161,7 @@
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;
+      markDeviceMode();
       ensureBottomNav();
       useReferenceAsMobileHome();
       enhanceDraws();
@@ -159,5 +173,6 @@
   observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
   window.addEventListener('DOMContentLoaded', schedule);
   window.addEventListener('resize', schedule);
+  window.addEventListener('orientationchange', schedule);
   schedule();
 })();
