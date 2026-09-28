@@ -18,6 +18,8 @@ const state = {
   drawsLoading: true,
   drawsError: null,
   screenshots: [],
+  screenshotsLoading: true,
+  screenshotsError: null,
   selectedId: null,
   syncing: false
 }
@@ -30,6 +32,14 @@ function escapeHtml(value) {
   const div = document.createElement('div')
   div.textContent = value ?? ''
   return div.innerHTML
+}
+
+function screenshotTarget(s) {
+  return Number(s?.upload?.target_draw_number ?? s?.target_draw_number)
+}
+
+function screenshotNumbers(s) {
+  return (s?.recognition?.numbers || s?.ocr_numbers || []).map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 80)
 }
 
 function officialColumn(draw) {
@@ -106,13 +116,17 @@ function nextScheduledTime(time) {
 }
 
 function latestDraw() { return state.draws[0] || null }
+
 function targetDrawNumber() {
-  const uploaded = state.screenshots.map(s=>Number(s.upload?.target_draw_number)).filter(Number.isFinite)
-  if (uploaded.length) return Math.max(...uploaded)
   const latest = latestDraw()
+  const latestNo = Number(latest?.draw_number || 0)
   const seen = Number(latest?.raw?.current_draw_seen)
-  if (Number.isFinite(seen) && seen > Number(latest?.draw_number || 0)) return seen
-  return latest?.draw_number ? Number(latest.draw_number)+1 : null
+  let target = Number.isFinite(seen) && seen > latestNo ? seen : (latestNo ? latestNo + 1 : null)
+  const futureTargets = state.screenshots
+    .map(s => screenshotTarget(s))
+    .filter(n => Number.isFinite(n) && (!latestNo || n > latestNo))
+  if (futureTargets.length) target = Math.max(Number(target || 0), ...futureTargets)
+  return target || null
 }
 
 function transitionSet(index) {
@@ -130,17 +144,77 @@ function samePositionSet(draw) {
   return out
 }
 
+function screenshotsForDraw(drawNumber) {
+  const target = Number(drawNumber)
+  return state.screenshots.filter(s => screenshotTarget(s) === target && screenshotNumbers(s).length)
+}
+
+function analyticsFromShots(shots) {
+  const usable = shots.filter(s => screenshotNumbers(s).length)
+  const counts = new Map(Array.from({length:80},(_,i)=>[i+1,0]))
+  for (const shot of usable) {
+    const unique = new Set(screenshotNumbers(shot))
+    unique.forEach(n=>counts.set(n,(counts.get(n)||0)+1))
+  }
+  const all = [...counts].map(([number,count])=>({number,count,share:usable.length?count/usable.length:0}))
+  const seen = all.filter(x=>x.count>0)
+  const top = [...seen].sort((a,b)=>b.count-a.count||a.number-b.number)
+  const threshold = usable.length >= 2 ? Math.max(2,Math.ceil(usable.length*.6)) : Infinity
+  const persistent = top.filter(x=>x.count>=threshold)
+  const absent = all.filter(x=>x.count===0).map(x=>x.number)
+  return {total:usable.length,all,top,persistent,absent,unique:seen.length}
+}
+
+function getAnalytics(drawNumber = targetDrawNumber()) {
+  return analyticsFromShots(screenshotsForDraw(drawNumber))
+}
+
+function proposalCheck(draw) {
+  const shots = screenshotsForDraw(draw?.draw_number)
+  const analytics = analyticsFromShots(shots)
+  if (!analytics.total) return null
+  const fact = (draw?.result_numbers || []).map(Number)
+  const proposed = new Set(analytics.top.map(x=>x.number))
+  const persistent = new Set(analytics.persistent.map(x=>x.number))
+  const hits = fact.filter(n=>proposed.has(n))
+  const persistentHits = fact.filter(n=>persistent.has(n))
+  const avoidedHits = fact.filter(n=>!proposed.has(n))
+  return { shots, analytics, proposed, persistent, hits, persistentHits, avoidedHits }
+}
+
+function numberChips(numbers, cls='') {
+  if (!numbers?.length) return '<span class="check-none">—</span>'
+  return `<div class="check-chips">${numbers.map(n=>`<span class="${cls}">${pad(n)}</span>`).join('')}</div>`
+}
+
+function proposalCheckMarkup(check) {
+  if (!check) return ''
+  const persistentAll = check.analytics.persistent.map(x=>x.number)
+  return `<div class="proposal-check">
+    <div class="proposal-check-head"><b>ПРОВЕРКА ПРЕДЛОЖКИ</b><span>${check.analytics.total} скр. · ${check.analytics.unique} уник.</span></div>
+    <div class="proposal-metrics">
+      <span class="good">✓ попало ${check.hits.length}/20</span>
+      <span>🎯 настойчивых ${persistentAll.length}</span>
+      <span class="good">✓ настойчивых попало ${check.persistentHits.length}</span>
+    </div>
+    <div class="check-line"><b>Предлагал и вышли:</b>${numberChips(check.hits,'hit')}</div>
+    <div class="check-line"><b>Настойчиво предлагал:</b>${numberChips(persistentAll,'persistent')}</div>
+    <div class="check-line"><b>Обошёл, но вышли:</b>${numberChips(check.avoidedHits,'missed')}</div>
+  </div>`
+}
+
 function drawCard(draw, index, label) {
   const numbers = (draw.result_numbers || []).map(Number)
   const stats = drawStats(numbers)
   const trans = transitionSet(index)
   const same = samePositionSet(draw)
   const column = drawColumn(draw)
+  const check = proposalCheck(draw)
   const notes = [
     stats.single.length ? `<span class="single">☝️ одиночные: ${stats.single.map(x=>`ст${x}`).join(', ')}</span>` : '',
     stats.empty.length ? `<span class="empty">${stats.empty.map(x=>`ст${x} ☐ — пустой!`).join(' ')}</span>` : ''
   ].filter(Boolean).join(' · ')
-  return `<section class="card draw-card">
+  return `<section class="card draw-card ${check?'has-check':''}">
     <div class="head">
       <div>
         <div class="label">${label}</div>
@@ -149,9 +223,16 @@ function drawCard(draw, index, label) {
       </div>
       <div class="win">🔴 ст${column || '—'}</div>
     </div>
-    <div class="meta"><span>Σ ${stats.sum}</span><span>${stats.even}/${stats.odd}</span><span>${stats.parity}</span></div>
-    <div class="numbers">${numbers.map(n=>`<div class="ball ${trans.has(n)?'pass':''} ${same.has(n)?'same':''}">${pad(n)}${trans.has(n)?'<i>◆</i>':''}</div>`).join('')}</div>
+    <div class="meta"><span>Σ ${stats.sum}</span><span>${stats.even}/${stats.odd}</span><span>${stats.parity}</span>${check?`<span class="verified-meta">проверка ${check.analytics.total} скр.</span>`:''}</div>
+    <div class="numbers">${numbers.map(n=>{
+      const proposalHit = Boolean(check?.proposed.has(n))
+      const persistentHit = Boolean(check?.persistent.has(n))
+      const classes = ['ball', trans.has(n)?'pass':'', same.has(n)?'same':'', proposalHit?'proposal-hit':'', persistentHit?'persistent-hit':''].filter(Boolean).join(' ')
+      const marks = `${trans.has(n)?'<i class="transition-mark">◆</i>':''}${proposalHit?'<i class="proposal-mark">✓</i>':''}`
+      return `<div class="${classes}">${pad(n)}${marks?`<span class="ball-marks">${marks}</span>`:''}</div>`
+    }).join('')}</div>
     ${notes ? `<div class="notes">${notes}</div>` : ''}
+    ${proposalCheckMarkup(check)}
   </section>`
 }
 
@@ -180,7 +261,7 @@ function homeView() {
       ? `<section class="card small error">Ошибка загрузки: ${escapeHtml(state.drawsError)}</section>`
       : state.draws.slice(0,3).map((d,i)=>drawCard(d,i,['ПОСЛЕДНИЙ ТИРАЖ','ПРЕДЫДУЩИЙ ТИРАЖ','ПРЕДПРЕДЫДУЩИЙ ТИРАЖ'][i] || 'ТИРАЖ')).join('')
   const target = targetDrawNumber()
-  const analytics = getAnalytics()
+  const analytics = getAnalytics(target)
   return `${topBar()}
     ${nextDrawBanner()}
     <main id="cards">${cards}</main>
@@ -190,14 +271,16 @@ function homeView() {
         <button class="tool primary" data-page="upload">▣ Загрузить скрин</button>
         <button class="tool" data-page="analysis">◎ Анализ скриншотов</button>
       </div>
-      <div class="small">${state.screenshots.length ? `Загружено: ${state.screenshots.length}. Распознано: ${analytics.total}.` : 'Скриншотов пока нет.'}</div>
-      ${analytics.total ? `<div class="mini-summary"><span>Настойчиво: ${analytics.persistent.slice(0,6).map(x=>x.number).join(', ') || '—'}</span><span>Обходит: ${analytics.absent.slice(0,10).join(', ') || '—'}</span></div>` : ''}
+      <div class="small">${state.screenshotsLoading ? 'Поднимаю сохранённые проверки…' : analytics.total ? `Для №${target}: распознано ${analytics.total} скрин(ов).` : `Для №${target || '—'} скринов пока нет.`}</div>
+      ${analytics.total ? `<div class="mini-summary"><span>Настойчиво: ${analytics.persistent.slice(0,8).map(x=>x.number).join(', ') || 'пока нет серии'}</span><span>Обходит: ${analytics.absent.slice(0,12).join(', ') || '—'}</span></div>` : ''}
+      ${state.screenshotsError ? `<div class="small error">История скринов: ${escapeHtml(state.screenshotsError)}</div>` : ''}
     </section>`
 }
 
 function uploadView() {
   const target = targetDrawNumber()
-  const selected = state.screenshots.find(x=>x.id===state.selectedId) || state.screenshots.at(-1)
+  const currentShots = state.screenshots.filter(s=>screenshotTarget(s)===Number(target) && !s.persisted)
+  const selected = currentShots.find(x=>x.id===state.selectedId) || currentShots.at(-1)
   return `${topBar()}
     <div class="section"><span>▣ Загрузить скрин</span><button class="back" data-page="home">← Главная</button></div>
     <section class="card upload-card">
@@ -206,22 +289,37 @@ function uploadView() {
       <label class="dropzone"><input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><b>＋ Выбрать скриншоты</b><span>PNG · JPG · WEBP</span></label>
       <div id="processing" class="small"></div>
     </section>
-    <div class="section"><span>Загруженные</span></div>
-    <div class="shots">${state.screenshots.length ? state.screenshots.slice().reverse().map((s,i)=>`<button class="shot ${selected?.id===s.id?'on':''}" data-shot="${s.id}"><img src="${s.localUrl}" alt=""><span><b>Скрин ${state.screenshots.length-i}</b><small>${statusText(s)}</small></span></button>`).join('') : `<section class="card small">Скриншотов пока нет.</section>`}</div>
-    ${selected ? `<section class="card preview-card"><div class="label">ПРОСМОТР</div><img src="${selected.localUrl}" alt=""><div class="recognized">${(selected.recognition?.numbers||[]).map(n=>`<span>${n}</span>`).join('')}</div><div class="small">${escapeHtml(selected.recognition?.message||'')}</div></section>` : ''}`
+    <div class="section"><span>Загруженные сейчас</span></div>
+    <div class="shots">${currentShots.length ? currentShots.slice().reverse().map((s,i)=>`<button class="shot ${selected?.id===s.id?'on':''}" data-shot="${s.id}">${s.localUrl?`<img src="${s.localUrl}" alt="">`:'<div class="shot-placeholder">▣</div>'}<span><b>Скрин ${currentShots.length-i}</b><small>${statusText(s)}</small></span></button>`).join('') : `<section class="card small">Для тиража №${target || '—'} новых скриншотов пока нет.</section>`}</div>
+    ${selected ? `<section class="card preview-card"><div class="label">ПРОСМОТР</div>${selected.localUrl?`<img src="${selected.localUrl}" alt="">`:''}<div class="recognized">${screenshotNumbers(selected).map(n=>`<span>${n}</span>`).join('')}</div><div class="small">${escapeHtml(selected.recognition?.message||'')}</div></section>` : ''}`
+}
+
+function historyCheckCard(drawNumber) {
+  const analytics = getAnalytics(drawNumber)
+  const draw = state.draws.find(d=>Number(d.draw_number)===Number(drawNumber))
+  if (!analytics.total) return ''
+  if (!draw) return `<section class="card history-check"><div class="head"><div><div class="label">СОХРАНЁННАЯ ПРЕДЛОЖКА</div><div class="draw">№${drawNumber}</div></div><div class="history-count">${analytics.total} скр.</div></div><div class="small">Факта этого тиража нет в загруженном окне архива.</div>${bars(analytics.top.slice(0,10),analytics.total)}</section>`
+  const check = proposalCheck(draw)
+  return `<section class="card history-check"><div class="head"><div><div class="label">СОХРАНЁННАЯ ПРОВЕРКА</div><div class="draw">№${drawNumber}</div></div><div class="history-count">${analytics.total} скр.</div></div>${proposalCheckMarkup(check)}</section>`
 }
 
 function analysisView() {
-  const a = getAnalytics()
   const target = targetDrawNumber()
+  const a = getAnalytics(target)
+  const historyDraws = [...new Set(state.screenshots.map(s=>screenshotTarget(s)).filter(Number.isFinite))]
+    .sort((x,y)=>y-x)
+    .filter(n=>n!==Number(target))
   return `${topBar()}
     <div class="section"><span>◎ Анализ скриншотов</span><button class="back" data-page="home">← Главная</button></div>
-    <section class="card"><div class="label">ЦЕЛЕВОЙ ТИРАЖ</div><div class="draw">${target ? `№${target}` : '—'}</div><div class="meta"><span>скринов ${a.total}</span><span>обходит ${a.absent.length}</span></div></section>
+    <section class="card"><div class="label">ТЕКУЩИЙ ЦЕЛЕВОЙ ТИРАЖ</div><div class="draw">${target ? `№${target}` : '—'}</div><div class="meta"><span>скринов ${a.total}</span><span>обходит ${a.absent.length}</span></div></section>
     ${a.total ? `
-      <section class="card"><div class="label green">🎯 НАСТОЙЧИВО ПРЕДЛАГАЕТ</div>${bars(a.persistent,a.total)}</section>
+      <section class="card"><div class="label green">🎯 НАСТОЙЧИВО ПРЕДЛАГАЕТ</div>${a.persistent.length?bars(a.persistent,a.total):'<div class="small">Для настойчивого сигнала нужно повторение минимум на двух скринах и ≥60% набора.</div>'}</section>
+      <section class="card"><div class="label">ЧАЩЕ ВСЕГО ПРЕДЛАГАЕТ</div>${bars(a.top.slice(0,12),a.total)}</section>
       <section class="card"><div class="label red">⊘ ОБХОДИТ / НЕ ПОКАЗЫВАЕТ</div><div class="chip-grid">${a.absent.map(n=>`<span>${n}</span>`).join('')}</div></section>
       <section class="card"><div class="label">КАРТА 1–80</div><div class="map">${a.all.map(x=>`<span class="m ${mapClass(x,a.total)}"><b>${x.number}</b><small>${x.count}×</small></span>`).join('')}</div></section>`
-      : `<section class="card small">Сначала загрузите скриншоты.</section>`}`
+      : `<section class="card small">Для текущего тиража №${target || '—'} скриншотов пока нет. Ниже остаются сохранённые проверки прошлых тиражей.</section>`}
+    <div class="section"><span>Сохранённые проверки</span></div>
+    ${state.screenshotsLoading ? `<section class="card small">Загружаю историю скринов…</section>` : historyDraws.length ? historyDraws.slice(0,12).map(historyCheckCard).join('') : `<section class="card small">Сохранённых проверок пока нет.</section>`}`
 }
 
 function archiveView() {
@@ -234,7 +332,7 @@ function footer() {
   return `<div class="footer"><div class="footerin">
     <button data-page="home" class="${state.page==='home'?'on':''}"><b>⌂</b>Главная</button>
     <button data-page="archive" class="${state.page==='archive'?'on':''}"><b>▦</b>Архив</button>
-    <button data-page="analysis" class="${state.page==='analysis'?'on':''}"><b>◎</b>Аналоги+</button>
+    <button data-page="analysis" class="${state.page==='analysis'?'on':''}"><b>◎</b>Анализ</button>
     <button data-refresh><b>↻</b>Обновить</button>
   </div></div>`
 }
@@ -254,7 +352,7 @@ function bindEvents() {
     render()
     scrollTo({top:0,behavior:'smooth'})
   }))
-  document.querySelectorAll('[data-refresh]').forEach(btn => btn.addEventListener('click',()=>loadDraws(true)))
+  document.querySelectorAll('[data-refresh]').forEach(btn => btn.addEventListener('click',refreshAll))
   document.querySelectorAll('[data-shot]').forEach(btn => btn.addEventListener('click',()=>{
     state.selectedId = btn.dataset.shot
     render()
@@ -264,8 +362,9 @@ function bindEvents() {
 }
 
 function statusText(s) {
-  if (s.recognition?.status === 'verified') return `✓ 10/10 · ${s.upload?.mode === 'cloud' && s.recognition.saved !== false ? 'сохранён' : 'распознан'}`
+  if (s.recognition?.status === 'verified') return `✓ 10/10 · ${s.persisted || (s.upload?.mode === 'cloud' && s.recognition.saved !== false) ? 'сохранён' : 'распознан'}`
   if (s.recognition?.status === 'review') return `⚠ проверить · ${s.recognition.numbers?.length || 0}`
+  if (s.recognition?.status === 'pending') return '… обработка'
   if (s.recognition?.status === 'error') return '✕ ошибка'
   return '… обработка'
 }
@@ -276,7 +375,7 @@ async function handleFiles(event) {
   const target = targetDrawNumber()
   for (const file of files) {
     const item = {
-      id: crypto.randomUUID(), file, localUrl: URL.createObjectURL(file), createdAt:new Date().toISOString(),
+      id: crypto.randomUUID(), file, localUrl: URL.createObjectURL(file), createdAt:new Date().toISOString(), persisted:false,
       upload:{mode:'pending',target_draw_number:target}, recognition:createPendingRecognition(file)
     }
     state.screenshots.push(item)
@@ -293,23 +392,7 @@ async function handleFiles(event) {
     render()
   }
   event.target.value = ''
-}
-
-function getAnalytics() {
-  const usable = state.screenshots.filter(s=>Array.isArray(s.recognition?.numbers)&&s.recognition.numbers.length)
-  const counts = new Map(Array.from({length:80},(_,i)=>[i+1,0]))
-  for (const shot of usable) {
-    const unique = new Set(shot.recognition.numbers.filter(n=>Number.isInteger(n)&&n>=1&&n<=80))
-    unique.forEach(n=>counts.set(n,(counts.get(n)||0)+1))
-  }
-  const all = [...counts].map(([number,count])=>({number,count,share:usable.length?count/usable.length:0}))
-  const seen = all.filter(x=>x.count>0)
-  const top = [...seen].sort((a,b)=>b.count-a.count||a.number-b.number)
-  const threshold = Math.max(2,Math.ceil(usable.length*.6))
-  let persistent = top.filter(x=>x.count>=threshold)
-  if (!persistent.length && top.length) persistent = top.slice(0,Math.min(8,top.length))
-  const absent = all.filter(x=>x.count===0).map(x=>x.number)
-  return {total:usable.length,all,top,persistent,absent}
+  await loadScreenshotHistory(false)
 }
 
 function bars(items,total) {
@@ -329,20 +412,57 @@ function mapClass(x,total) {
 }
 
 async function loadDraws(manual=false) {
-  if (state.syncing) return
-  state.syncing = true
-  if (manual) render()
   if (!supabase) {
     state.drawsLoading = false
     state.drawsError = 'Supabase не подключён'
-    state.syncing = false
-    render()
+    if (manual) render()
     return
   }
-  const {data,error} = await supabase.from('draws').select('draw_number,draw_time,result_numbers,source,raw,created_at').order('draw_number',{ascending:false}).limit(40)
+  const {data,error} = await supabase.from('draws').select('draw_number,draw_time,result_numbers,source,raw,created_at').order('draw_number',{ascending:false}).limit(80)
   state.drawsLoading = false
   state.drawsError = error ? error.message : null
   if (!error) state.draws = data || []
+  if (manual) render()
+}
+
+async function loadScreenshotHistory(manual=false) {
+  if (!supabase) {
+    state.screenshotsLoading = false
+    state.screenshotsError = 'Supabase не подключён'
+    if (manual) render()
+    return
+  }
+  const {data,error} = await supabase.rpc('get_screenshot_analysis_history',{limit_rows:500})
+  state.screenshotsLoading = false
+  state.screenshotsError = error ? error.message : null
+  if (!error) {
+    const persisted = (data || []).map(row => ({
+      id:`cloud:${row.id}`,
+      persisted:true,
+      localUrl:null,
+      createdAt:row.created_at,
+      upload:{mode:'cloud-history',target_draw_number:Number(row.target_draw_number),screenshot_id:row.id},
+      recognition:{
+        status:row.ocr_status || 'pending',
+        confidence:row.ocr_confidence == null ? null : Number(row.ocr_confidence),
+        numbers:(row.ocr_numbers || []).map(Number),
+        message:'Сохранённая проверка из облака.'
+      }
+    }))
+    const locals = state.screenshots.filter(s=>!s.persisted)
+    const byKey = new Map()
+    persisted.forEach(s=>byKey.set(String(s.upload?.screenshot_id || s.id),s))
+    locals.forEach(s=>byKey.set(String(s.upload?.screenshot_id || s.id),s))
+    state.screenshots = [...byKey.values()]
+  }
+  if (manual) render()
+}
+
+async function refreshAll() {
+  if (state.syncing) return
+  state.syncing = true
+  render()
+  await Promise.all([loadDraws(false),loadScreenshotHistory(false)])
   state.syncing = false
   render()
 }
@@ -354,4 +474,4 @@ window.addEventListener('error', event => {
 })
 
 render()
-loadDraws()
+refreshAll()
