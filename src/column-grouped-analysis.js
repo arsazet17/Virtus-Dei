@@ -57,6 +57,35 @@ function replaceCard(labelRegex, title, entries, mode) {
   card.innerHTML = `<b>${title}</b>${matrixHtml(entries, mode)}`
 }
 
+function replaceColumnDistribution(shots) {
+  const title = [...document.querySelectorAll('.panel-title')]
+    .find(node => /РАСПРЕДЕЛЕНИЕ ПО СТОЛБАМ/i.test(node.textContent || ''))
+  if (!title) return
+
+  const panel = title.closest('.panel')
+  const list = panel?.querySelector('.column-list')
+  if (!panel || !list) return
+
+  const counts = Array(11).fill(0)
+  for (const shot of shots) {
+    const numbers = [...new Set((shot.ocr_numbers || []).map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 80))]
+    for (const n of numbers) counts[columnOf(n)]++
+  }
+
+  const rows = Array.from({ length: 10 }, (_, i) => ({ column: i + 1, count: counts[i + 1] }))
+    .sort((a, b) => b.count - a.count || a.column - b.column)
+  const maxCount = Math.max(1, ...rows.map(row => row.count))
+
+  list.innerHTML = rows.map(row =>
+    `<div><span>ст${row.column}</span><b>${row.count}</b><i style="width:${Math.min(100, row.count / maxCount * 100)}%"></i></div>`
+  ).join('')
+
+  const note = panel.querySelector('.muted-text')
+  if (note) {
+    note.textContent = `Показаны все 10 столбов. Количество — сколько чисел каждого столба встретилось на ${shots.length} проверенных скриншотах.`
+  }
+}
+
 async function applyColumnGrouping() {
   if (running || !isPreAnalysisVisible()) return
   const target = currentTarget()
@@ -99,6 +128,7 @@ async function applyColumnGrouping() {
     replaceCard(/Повторяется/i, '🟡 Повторяется · сколько раз на скринах', repeat, 'repeat')
     replaceCard(/Показал один раз/i, '🔵 Показал один раз', once, 'once')
     replaceCard(/Вообще отсутствуют/i, '🔴 Вообще отсутствуют', absent, 'absent')
+    replaceColumnDistribution(shots)
     lastKey = key
   } catch (error) {
     console.warn('column-grouped-analysis:', error)
