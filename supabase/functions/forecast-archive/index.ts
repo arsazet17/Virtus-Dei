@@ -36,6 +36,23 @@ function cleanCandidates(input: unknown, combo: number[]) {
   })).filter((item: any) => allowed.has(item.number));
 }
 
+function frequentFromShots(shots: any[]) {
+  const freq = new Map<number, number>();
+  let usable = 0;
+  for (const shot of shots || []) {
+    const nums = cleanNumbers(shot?.ocr_numbers);
+    if (nums.length !== 10) continue;
+    usable++;
+    for (const n of nums) freq.set(n, (freq.get(n) || 0) + 1);
+  }
+  const ranked = [...freq.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+    .slice(0, 8);
+  const counts: Record<string, number> = {};
+  for (const [n, count] of ranked) counts[String(n)] = count;
+  return { usable, numbers: ranked.map(([n]) => n), counts };
+}
+
 Deno.serve(async (req: Request) => {
   const origin = req.headers.get("origin") || "";
   if (origin && !ALLOWED_ORIGINS.has(origin)) return json({ ok: false, error: "origin not allowed" }, 403, origin);
@@ -70,16 +87,24 @@ Deno.serve(async (req: Request) => {
           .eq("target_draw_number", target)
           .maybeSingle();
         if (frozenError) throw frozenError;
-        return json({ ok: Boolean(frozen), locked: true, forecast: frozen || null, error: frozen ? null : "fact already exists; forecast cannot be created after the draw" }, frozen ? 200 : 409, origin);
+        return json({
+          ok: Boolean(frozen),
+          locked: true,
+          forecast: frozen || null,
+          error: frozen ? null : "fact already exists; forecast cannot be created after the draw"
+        }, frozen ? 200 : 409, origin);
       }
 
-      const { count: screenshotCount, error: screenshotError } = await db
+      const { data: shots, error: screenshotError } = await db
         .from("screenshots")
-        .select("id", { count: "exact", head: true })
+        .select("id,ocr_numbers")
         .eq("target_draw_number", target)
-        .eq("ocr_status", "verified");
+        .eq("ocr_status", "verified")
+        .order("created_at", { ascending: true });
       if (screenshotError) throw screenshotError;
-      if (!screenshotCount) return json({ ok: false, error: "no verified screenshots for target draw" }, 409, origin);
+
+      const frequent = frequentFromShots(shots || []);
+      if (!frequent.usable) return json({ ok: false, error: "no verified screenshots for target draw" }, 409, origin);
 
       const { count: historyCycles, error: cyclesError } = await db
         .from("learning_observations")
@@ -95,7 +120,9 @@ Deno.serve(async (req: Request) => {
           target_draw_number: target,
           combo,
           candidates,
-          screenshot_count: Number(screenshotCount || 0),
+          frequent_numbers: frequent.numbers,
+          frequent_counts: frequent.counts,
+          screenshot_count: frequent.usable,
           history_cycles: Number(historyCycles || 0),
           model_version: "virtus-possible-output-v1",
           updated_at: now
@@ -111,7 +138,7 @@ Deno.serve(async (req: Request) => {
       const limit = Math.min(100, Math.max(1, Number(body?.limit) || 40));
       const { data: forecasts, error: archiveError } = await db
         .from("possible_output_archive")
-        .select("target_draw_number,combo,candidates,screenshot_count,history_cycles,model_version,created_at,updated_at")
+        .select("target_draw_number,combo,candidates,frequent_numbers,frequent_counts,screenshot_count,history_cycles,model_version,created_at,updated_at")
         .order("target_draw_number", { ascending: false })
         .limit(limit);
       if (archiveError) throw archiveError;
@@ -130,18 +157,23 @@ Deno.serve(async (req: Request) => {
       const rows = (forecasts || []).map((row: any) => {
         const target = Number(row.target_draw_number);
         const combo = cleanNumbers(row.combo);
+        const frequentNumbers = cleanNumbers(row.frequent_numbers).slice(0, 8);
         const fact = factByTarget.get(target) || [];
         const checked = fact.length === 20;
         const factSet = new Set(fact);
         const hitNumbers = checked ? combo.filter(n => factSet.has(n)) : [];
+        const frequentHitNumbers = checked ? frequentNumbers.filter(n => factSet.has(n)) : [];
         return {
           ...row,
           target_draw_number: target,
           combo,
+          frequent_numbers: frequentNumbers,
           checked,
           fact_numbers: checked ? fact : [],
           hit_numbers: hitNumbers,
-          hit_count: hitNumbers.length
+          hit_count: hitNumbers.length,
+          frequent_hit_numbers: frequentHitNumbers,
+          frequent_hit_count: frequentHitNumbers.length
         };
       });
 
