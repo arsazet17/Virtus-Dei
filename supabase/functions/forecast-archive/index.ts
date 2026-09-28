@@ -7,6 +7,11 @@ const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:5173"
 ]);
 
+const BASELINE = 20 / 80;
+const PRIOR_WEIGHT = 40;
+const validNumber = (n: number) => Number.isInteger(n) && n >= 1 && n <= 80;
+const columnOf = (n: number) => n % 10 === 0 ? 10 : n % 10;
+
 function responseHeaders(origin: string) {
   return {
     "content-type": "application/json",
@@ -23,34 +28,165 @@ function json(body: unknown, status: number, origin: string) {
 
 function cleanNumbers(input: unknown): number[] {
   if (!Array.isArray(input)) return [];
-  return [...new Set(input.map(Number).filter(n => Number.isInteger(n) && n >= 1 && n <= 80))];
-}
-
-function cleanCandidates(input: unknown, combo: number[]) {
-  if (!Array.isArray(input)) return [];
-  const allowed = new Set(combo);
-  return input.slice(0, 10).map((item: any) => ({
-    number: Number(item?.number),
-    relation: String(item?.relation || "").slice(0, 80),
-    index: Number.isFinite(Number(item?.index)) ? Number(item.index) : null
-  })).filter((item: any) => allowed.has(item.number));
+  return [...new Set(input.map(Number).filter(validNumber))];
 }
 
 function frequentFromShots(shots: any[]) {
   const freq = new Map<number, number>();
-  let usable = 0;
+  const usable: number[][] = [];
   for (const shot of shots || []) {
     const nums = cleanNumbers(shot?.ocr_numbers);
     if (nums.length !== 10) continue;
-    usable++;
+    usable.push(nums);
     for (const n of nums) freq.set(n, (freq.get(n) || 0) + 1);
   }
-  const ranked = [...freq.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
-    .slice(0, 8);
+  const ranked = [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, 8);
   const counts: Record<string, number> = {};
   for (const [n, count] of ranked) counts[String(n)] = count;
   return { usable, numbers: ranked.map(([n]) => n), counts };
+}
+
+function aggregate(rows: any[]) {
+  const out = {
+    cycles: 0,
+    direct: { candidates: 0, hits: 0 },
+    neighbor1: { candidates: 0, hits: 0 },
+    neighbor2: { candidates: 0, hits: 0 },
+    sameColumn: { candidates: 0, hits: 0 },
+    cold: { candidates: 0, hits: 0 }
+  };
+  for (const row of rows || []) {
+    const s = row?.features?.relation_stats;
+    if (!s) continue;
+    out.cycles++;
+    out.direct.candidates += Number(s?.tier_counts?.direct || 0);
+    out.direct.hits += Number(s?.tier_hits?.direct || 0);
+    out.neighbor1.candidates += Number(s?.tier_counts?.neighbor_1 || 0);
+    out.neighbor1.hits += Number(s?.tier_hits?.neighbor_1 || 0);
+    out.neighbor2.candidates += Number(s?.tier_counts?.neighbor_2 || 0);
+    out.neighbor2.hits += Number(s?.tier_hits?.neighbor_2 || 0);
+    out.sameColumn.candidates += Number(s?.tier_counts?.same_column || 0);
+    out.sameColumn.hits += Number(s?.tier_hits?.same_column || 0);
+    out.cold.candidates += Number(s?.tier_counts?.cold || 0);
+    out.cold.hits += Number(s?.tier_hits?.cold || 0);
+  }
+  return out;
+}
+
+function smoothedRate(item: { candidates: number; hits: number }) {
+  return (Number(item?.hits || 0) + BASELINE * PRIOR_WEIGHT) /
+    (Number(item?.candidates || 0) + PRIOR_WEIGHT);
+}
+
+function currentProfile(number: number, usable: number[][]) {
+  const n1 = [number - 1, number + 1].filter(validNumber);
+  const n2 = [number - 2, number + 2].filter(validNumber);
+  const exactShots = usable.filter(nums => nums.includes(number)).length;
+  const neighbor1Shots = usable.filter(nums => nums.some(v => n1.includes(v))).length;
+  const neighbor2Shots = usable.filter(nums => nums.some(v => n2.includes(v))).length;
+  const sameColumnShots = usable.filter(nums => nums.some(v => v !== number && columnOf(v) === columnOf(number))).length;
+  let tier = "cold";
+  let supportShots = 0;
+  if (exactShots > 0) { tier = "direct"; supportShots = exactShots; }
+  else if (neighbor1Shots > 0) { tier = "neighbor_1"; supportShots = neighbor1Shots; }
+  else if (neighbor2Shots > 0) { tier = "neighbor_2"; supportShots = neighbor2Shots; }
+  else if (sameColumnShots > 0) { tier = "same_column"; supportShots = sameColumnShots; }
+  return { number, tier, supportShots };
+}
+
+function buildForecast(usable: number[][], historyRows: any[]) {
+  const stats = aggregate(historyRows);
+  const byTier: Record<string, { candidates: number; hits: number }> = {
+    direct: stats.direct,
+    neighbor_1: stats.neighbor1,
+    neighbor_2: stats.neighbor2,
+    same_column: stats.sameColumn,
+    cold: stats.cold
+  };
+  const ranked = Array.from({ length: 80 }, (_, i) => currentProfile(i + 1, usable)).map(p => {
+    const hist = byTier[p.tier] || { candidates: 0, hits: 0 };
+    const learnedRate = smoothedRate(hist);
+    const supportShare = p.supportShots / usable.length;
+    const index = 100 * (learnedRate / BASELINE) + 12 * supportShare;
+    return { ...p, index };
+  }).sort((a, b) => b.index - a.index || b.supportShots - a.supportShots || a.number - b.number);
+  const top = ranked.slice(0, 10);
+  return {
+    cycles: stats.cycles,
+    combo: top.map(x => x.number),
+    candidates: top.map(x => ({ number: x.number, relation: x.tier, index: Number(x.index.toFixed(4)) }))
+  };
+}
+
+async function saveForecast(db: any, target: number) {
+  if (!Number.isInteger(target) || target <= 0) {
+    return { status: 400, body: { ok: false, error: "valid target_draw_number is required" } };
+  }
+
+  const { data: fact, error: factError } = await db
+    .from("draws")
+    .select("draw_number,result_numbers")
+    .eq("draw_number", target)
+    .maybeSingle();
+  if (factError) throw factError;
+
+  if (fact && cleanNumbers(fact.result_numbers).length === 20) {
+    const { data: frozen, error: frozenError } = await db
+      .from("possible_output_archive")
+      .select("*")
+      .eq("target_draw_number", target)
+      .maybeSingle();
+    if (frozenError) throw frozenError;
+    return {
+      status: frozen ? 200 : 409,
+      body: {
+        ok: Boolean(frozen),
+        locked: true,
+        forecast: frozen || null,
+        error: frozen ? null : "fact already exists; forecast cannot be created after the draw"
+      }
+    };
+  }
+
+  const { data: shots, error: screenshotError } = await db
+    .from("screenshots")
+    .select("id,ocr_numbers,created_at")
+    .eq("target_draw_number", target)
+    .eq("ocr_status", "verified")
+    .order("created_at", { ascending: true });
+  if (screenshotError) throw screenshotError;
+
+  const frequent = frequentFromShots(shots || []);
+  if (!frequent.usable.length) {
+    return { status: 409, body: { ok: false, error: "no verified screenshots for target draw" } };
+  }
+
+  const { data: historyRows, error: historyError } = await db
+    .from("learning_observations")
+    .select("target_draw_number,features")
+    .lt("target_draw_number", target);
+  if (historyError) throw historyError;
+
+  const forecast = buildForecast(frequent.usable, historyRows || []);
+  const now = new Date().toISOString();
+  const { data: saved, error: saveError } = await db
+    .from("possible_output_archive")
+    .upsert({
+      target_draw_number: target,
+      combo: forecast.combo,
+      candidates: forecast.candidates,
+      frequent_numbers: frequent.numbers,
+      frequent_counts: frequent.counts,
+      screenshot_count: frequent.usable.length,
+      history_cycles: forecast.cycles,
+      model_version: "virtus-possible-output-v2-auto",
+      updated_at: now
+    }, { onConflict: "target_draw_number" })
+    .select("*")
+    .single();
+  if (saveError) throw saveError;
+
+  return { status: 200, body: { ok: true, locked: false, forecast: saved } };
 }
 
 Deno.serve(async (req: Request) => {
@@ -66,72 +202,9 @@ Deno.serve(async (req: Request) => {
     const body = await req.json().catch(() => ({}));
     const action = String(body?.action || "history");
 
-    if (action === "save") {
-      const target = Number(body?.target_draw_number);
-      const combo = cleanNumbers(body?.combo);
-      if (!Number.isInteger(target) || target <= 0 || combo.length !== 10) {
-        return json({ ok: false, error: "valid target_draw_number and exactly 10 unique numbers are required" }, 400, origin);
-      }
-
-      const { data: fact, error: factError } = await db
-        .from("draws")
-        .select("draw_number,result_numbers")
-        .eq("draw_number", target)
-        .maybeSingle();
-      if (factError) throw factError;
-
-      if (fact && cleanNumbers(fact.result_numbers).length === 20) {
-        const { data: frozen, error: frozenError } = await db
-          .from("possible_output_archive")
-          .select("*")
-          .eq("target_draw_number", target)
-          .maybeSingle();
-        if (frozenError) throw frozenError;
-        return json({
-          ok: Boolean(frozen),
-          locked: true,
-          forecast: frozen || null,
-          error: frozen ? null : "fact already exists; forecast cannot be created after the draw"
-        }, frozen ? 200 : 409, origin);
-      }
-
-      const { data: shots, error: screenshotError } = await db
-        .from("screenshots")
-        .select("id,ocr_numbers")
-        .eq("target_draw_number", target)
-        .eq("ocr_status", "verified")
-        .order("created_at", { ascending: true });
-      if (screenshotError) throw screenshotError;
-
-      const frequent = frequentFromShots(shots || []);
-      if (!frequent.usable) return json({ ok: false, error: "no verified screenshots for target draw" }, 409, origin);
-
-      const { count: historyCycles, error: cyclesError } = await db
-        .from("learning_observations")
-        .select("target_draw_number", { count: "exact", head: true })
-        .lt("target_draw_number", target);
-      if (cyclesError) throw cyclesError;
-
-      const candidates = cleanCandidates(body?.candidates, combo);
-      const now = new Date().toISOString();
-      const { data: saved, error: saveError } = await db
-        .from("possible_output_archive")
-        .upsert({
-          target_draw_number: target,
-          combo,
-          candidates,
-          frequent_numbers: frequent.numbers,
-          frequent_counts: frequent.counts,
-          screenshot_count: frequent.usable,
-          history_cycles: Number(historyCycles || 0),
-          model_version: "virtus-possible-output-v1",
-          updated_at: now
-        }, { onConflict: "target_draw_number" })
-        .select("*")
-        .single();
-      if (saveError) throw saveError;
-
-      return json({ ok: true, locked: false, forecast: saved }, 200, origin);
+    if (action === "save" || action === "auto_save") {
+      const result = await saveForecast(db, Number(body?.target_draw_number));
+      return json(result.body, result.status, origin);
     }
 
     if (action === "history") {
@@ -176,7 +249,6 @@ Deno.serve(async (req: Request) => {
           frequent_hit_count: frequentHitNumbers.length
         };
       });
-
       return json({ ok: true, forecasts: rows }, 200, origin);
     }
 
