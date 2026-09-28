@@ -23,7 +23,10 @@ function currentPrediction() {
 
   const combo = candidates.map(x => x.number)
   if (combo.length !== 10 || new Set(combo).size !== 10) return null
-  return { panel, target, combo, candidates }
+  const label = String(panel.querySelector('.kin-combo-label')?.textContent || '')
+  const countMatch = label.match(/текущим\s+(\d+)\s+скрин/i)
+  const screenshotCount = countMatch ? Number(countMatch[1]) : 0
+  return { panel, target, combo, candidates, screenshotCount }
 }
 
 function setSaveState(panel, text, kind = 'ok') {
@@ -41,7 +44,7 @@ function setSaveState(panel, text, kind = 'ok') {
 async function saveCurrentPrediction() {
   const current = currentPrediction()
   if (!current) return
-  const signature = `${current.target}:${current.combo.join('-')}`
+  const signature = `${current.target}:${current.screenshotCount}:${current.combo.join('-')}`
   if (signature === lastSavedSignature) return
   lastSavedSignature = signature
   setSaveState(current.panel, 'архив…', 'wait')
@@ -79,9 +82,18 @@ function formatDate(value) {
   }).format(date).replace(',', '')
 }
 
+function frequentChip(number, counts, hitSet) {
+  const count = Number(counts?.[String(number)] || 0)
+  return `<span class="${hitSet.has(Number(number)) ? 'hit' : ''}">${pad(number)}${count ? `<small>×${count}</small>` : ''}</span>`
+}
+
 function archiveMarkup(rows) {
   const checked = rows.filter(r => r.checked)
-  const avg = checked.length ? checked.reduce((sum, r) => sum + Number(r.hit_count || 0), 0) / checked.length : null
+  const avgCombo = checked.length ? checked.reduce((sum, r) => sum + Number(r.hit_count || 0), 0) / checked.length : null
+  const frequentChecked = checked.filter(r => Array.isArray(r.frequent_numbers) && r.frequent_numbers.length)
+  const avgFrequent = frequentChecked.length
+    ? frequentChecked.reduce((sum, r) => sum + Number(r.frequent_hit_count || 0), 0) / frequentChecked.length
+    : null
 
   return `<section class="panel poa-panel" id="possible-output-history-panel">
     <div class="panel-head">
@@ -90,30 +102,44 @@ function archiveMarkup(rows) {
     </div>
     <div class="poa-metrics">
       <div><b>${checked.length}</b><span>уже проверено</span></div>
-      <div><b>${avg == null ? '—' : avg.toFixed(2)}</b><span>ср. HIT из 10</span></div>
-      <div><b>2.50</b><span>случайное ожидание</span></div>
+      <div><b>${avgCombo == null ? '—' : avgCombo.toFixed(2)}</b><span>ср. комба HIT /10</span></div>
+      <div><b>${avgFrequent == null ? '—' : avgFrequent.toFixed(2)}</b><span>ср. частые HIT /8</span></div>
     </div>
     <div class="poa-list">
       ${rows.length ? rows.map(row => {
         const hitSet = new Set((row.hit_numbers || []).map(Number))
-        const status = row.checked ? `HIT ${Number(row.hit_count || 0)}/10` : 'ожидание факта'
+        const frequentHitSet = new Set((row.frequent_hit_numbers || []).map(Number))
+        const frequent = Array.isArray(row.frequent_numbers) ? row.frequent_numbers : []
+        const counts = row.frequent_counts || {}
+        const comboStatus = row.checked ? `КОМБО ${Number(row.hit_count || 0)}/10` : 'ожидание факта'
+        const frequentStatus = row.checked && frequent.length ? `ЧАСТЫЕ ${Number(row.frequent_hit_count || 0)}/${frequent.length}` : ''
         return `<details class="poa-row">
           <summary>
             <b>№${row.target_draw_number}</b>
             <span>${row.screenshot_count} скр.</span>
-            <strong class="${row.checked ? 'checked' : 'waiting'}">${status}</strong>
+            <strong class="${row.checked ? 'checked' : 'waiting'}">${comboStatus}${frequentStatus ? `<small>${frequentStatus}</small>` : ''}</strong>
             <i>⌄</i>
           </summary>
           <div class="poa-body">
-            <div class="poa-caption">ЗАФИКСИРОВАННАЯ КОМБА</div>
+            <div class="poa-caption">ЗАФИКСИРОВАННАЯ КОМБА · 10 ЧИСЕЛ</div>
             <div class="poa-combo">${(row.combo || []).map(n => `<span class="${hitSet.has(Number(n)) ? 'hit' : ''}">${pad(n)}</span>`).join('')}</div>
-            ${row.checked ? `<div class="poa-hitline"><b>Попали:</b> ${(row.hit_numbers || []).map(pad).join(', ') || 'нет'}</div>` : '<div class="poa-hitline muted">Тираж ещё не закрыт фактом.</div>'}
+            ${row.checked ? `<div class="poa-hitline"><b>Комба попала:</b> ${(row.hit_numbers || []).map(pad).join(', ') || 'нет'} · ${Number(row.hit_count || 0)}/10</div>` : '<div class="poa-hitline muted">Тираж ещё не закрыт фактом.</div>'}
+
+            <div class="poa-separator"></div>
+            <div class="poa-caption">ЧАСТО ПОВТОРЯЮЩИЕСЯ НА СКРИНАХ · ТОП-8</div>
+            ${frequent.length
+              ? `<div class="poa-combo poa-frequent">${frequent.map(n => frequentChip(n, counts, frequentHitSet)).join('')}</div>`
+              : '<div class="poa-hitline muted">Частые числа для этой старой записи не были зафиксированы.</div>'}
+            ${frequent.length && row.checked
+              ? `<div class="poa-hitline"><b>Частые попали:</b> ${(row.frequent_hit_numbers || []).map(pad).join(', ') || 'нет'} · ${Number(row.frequent_hit_count || 0)}/${frequent.length}</div>`
+              : frequent.length ? '<div class="poa-hitline muted">Проверка частых чисел ждёт официальный факт.</div>' : ''}
+
             <div class="poa-meta">${formatDate(row.updated_at)} · история ${row.history_cycles} циклов · ${row.model_version}</div>
           </div>
         </details>`
       }).join('') : '<div class="poa-empty">Архив начнёт заполняться автоматически, когда появится первая комба «Возможный выход».</div>'}
     </div>
-    <p class="poa-note">До выхода тиража запись обновляется при изменении комбы. После появления официального факта она больше не переписывается, а только получает результат проверки.</p>
+    <p class="poa-note">В каждой записи проверяются две независимые дорезультатные линии: комба «Возможный выход» и ТОП‑8 самых частых чисел на проверенных скриншотах. До тиража запись обновляется вместе со скринами; после появления факта замораживается.</p>
   </section>`
 }
 
