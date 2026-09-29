@@ -7,7 +7,9 @@ on:
       - '.github/workflows/stoloto-sync.yml'
       - 'scripts/sync-stoloto.mjs'
   schedule:
-    - cron: '*/10 * * * *'
+    # KENO draws are normally at :02, :17 and :32. Check twice after each slot
+    # so the latest completed draw reaches the app as soon as the archive publishes it.
+    - cron: '7,12,22,27,37,42 * * * *'
 
 permissions:
   contents: read
