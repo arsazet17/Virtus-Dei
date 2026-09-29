@@ -9,6 +9,16 @@ const ALLOWED_ORIGINS = new Set([
 
 const BASELINE = 20 / 80;
 const PRIOR_WEIGHT = 40;
+const MODEL_VERSION = "virtus-possible-output-v2-cutoff";
+const SCHEDULE = [
+  "00:02","00:17","00:32","01:02","01:17","01:32","02:02","02:17","02:32","03:02","03:32","04:02",
+  "04:17","04:32","05:02","05:17","05:32","06:02","06:17","06:32","07:02","07:32","08:02","08:17",
+  "08:32","09:02","09:17","09:32","10:02","10:17","10:32","11:02","11:32","12:02","12:17","12:32",
+  "13:02","13:17","13:32","14:02","14:17","14:32","15:02","15:32","16:02","16:17","16:32","17:02",
+  "17:17","17:32","18:02","18:17","18:32","19:02","19:32","20:02","20:17","20:32","21:02","21:17",
+  "21:32","22:02","22:17","22:32","23:02","23:32"
+];
+
 const validNumber = (n: number) => Number.isInteger(n) && n >= 1 && n <= 80;
 const columnOf = (n: number) => n % 10 === 0 ? 10 : n % 10;
 
@@ -33,17 +43,19 @@ function cleanNumbers(input: unknown): number[] {
 
 function frequentFromShots(shots: any[]) {
   const freq = new Map<number, number>();
+  const usableShots: any[] = [];
   const usable: number[][] = [];
   for (const shot of shots || []) {
     const nums = cleanNumbers(shot?.ocr_numbers);
     if (nums.length !== 10) continue;
+    usableShots.push({ ...shot, nums });
     usable.push(nums);
     for (const n of nums) freq.set(n, (freq.get(n) || 0) + 1);
   }
   const ranked = [...freq.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0]).slice(0, 8);
   const counts: Record<string, number> = {};
   for (const [n, count] of ranked) counts[String(n)] = count;
-  return { usable, numbers: ranked.map(([n]) => n), counts };
+  return { usableShots, usable, numbers: ranked.map(([n]) => n), counts };
 }
 
 function aggregate(rows: any[]) {
@@ -56,6 +68,7 @@ function aggregate(rows: any[]) {
     cold: { candidates: 0, hits: 0 }
   };
   for (const row of rows || []) {
+    if (row?.features?.anti_leakage !== true) continue;
     const s = row?.features?.relation_stats;
     if (!s) continue;
     out.cycles++;
@@ -114,8 +127,106 @@ function buildForecast(usable: number[][], historyRows: any[]) {
   return {
     cycles: stats.cycles,
     combo: top.map(x => x.number),
-    candidates: top.map(x => ({ number: x.number, relation: x.tier, index: Number(x.index.toFixed(4)) }))
+    candidates: top.map(x => ({
+      number: x.number,
+      relation: x.tier,
+      support_shots: x.supportShots,
+      index: Number(x.index.toFixed(4))
+    }))
   };
+}
+
+function moscowParts(value: unknown) {
+  const date = new Date(String(value || ""));
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Europe/Moscow",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23"
+  }).formatToParts(date);
+  const get = (type: string) => Number(parts.find(p => p.type === type)?.value);
+  const year = get("year"), month = get("month"), day = get("day"), hour = get("hour"), minute = get("minute");
+  if (![year, month, day, hour, minute].every(Number.isFinite)) return null;
+  return { year, month, day, hour, minute };
+}
+
+function scheduledCutoffFromPrevious(value: unknown, steps: number) {
+  const p = moscowParts(value);
+  if (!p || !Number.isInteger(steps) || steps < 1) return null;
+  let localDate = Date.UTC(p.year, p.month - 1, p.day);
+  let current = `${String(p.hour).padStart(2, "0")}:${String(p.minute).padStart(2, "0")}`;
+
+  for (let s = 0; s < steps; s++) {
+    const exact = SCHEDULE.indexOf(current);
+    let nextIndex = -1;
+    if (exact >= 0) {
+      nextIndex = (exact + 1) % SCHEDULE.length;
+      if (nextIndex === 0) localDate += 86400000;
+    } else {
+      const mins = p.hour * 60 + p.minute;
+      nextIndex = SCHEDULE.findIndex(t => {
+        const [h, m] = t.split(":").map(Number);
+        return h * 60 + m > mins;
+      });
+      if (nextIndex < 0) {
+        nextIndex = 0;
+        localDate += 86400000;
+      }
+    }
+    current = SCHEDULE[nextIndex];
+  }
+
+  const d = new Date(localDate);
+  const [hour, minute] = current.split(":").map(Number);
+  return new Date(Date.UTC(
+    d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), hour - 3, minute, 0, 0
+  )).toISOString();
+}
+
+async function resolveCutoff(db: any, target: number, fact: any) {
+  const direct = fact?.draw_time || fact?.raw?.official_draw_time;
+  if (direct) {
+    const d = new Date(direct);
+    if (!Number.isNaN(d.getTime())) return d.toISOString();
+  }
+
+  const { data: prev, error } = await db
+    .from("draws")
+    .select("draw_number,draw_time,raw")
+    .lt("draw_number", target)
+    .order("draw_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  if (!prev) return null;
+  const prevTime = prev?.raw?.official_draw_time || prev?.draw_time;
+  const steps = target - Number(prev.draw_number);
+  return scheduledCutoffFromPrevious(prevTime, steps);
+}
+
+async function fingerprintShots(shots: any[]) {
+  const canonical = (shots || [])
+    .map((s: any) => `${String(s.id)}:${cleanNumbers(s.ocr_numbers).sort((a, b) => a - b).join(",")}`)
+    .sort()
+    .join("|");
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function freezeExisting(db: any, existing: any, cutoffAt: string | null) {
+  if (!existing || existing.frozen_at) return existing;
+  const { data, error } = await db
+    .from("possible_output_archive")
+    .update({
+      frozen_at: new Date().toISOString(),
+      cutoff_at: existing.cutoff_at || cutoffAt,
+      updated_at: existing.updated_at || new Date().toISOString()
+    })
+    .eq("id", existing.id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data;
 }
 
 async function saveForecast(db: any, target: number) {
@@ -123,32 +234,50 @@ async function saveForecast(db: any, target: number) {
     return { status: 400, body: { ok: false, error: "valid target_draw_number is required" } };
   }
 
+  const { data: existing, error: existingError } = await db
+    .from("possible_output_archive")
+    .select("*")
+    .eq("target_draw_number", target)
+    .maybeSingle();
+  if (existingError) throw existingError;
+
   const { data: fact, error: factError } = await db
     .from("draws")
-    .select("draw_number,result_numbers")
+    .select("draw_number,result_numbers,draw_time,raw")
     .eq("draw_number", target)
     .maybeSingle();
   if (factError) throw factError;
 
-  if (fact && cleanNumbers(fact.result_numbers).length === 20) {
-    const { data: frozen, error: frozenError } = await db
-      .from("possible_output_archive")
-      .select("*")
-      .eq("target_draw_number", target)
-      .maybeSingle();
-    if (frozenError) throw frozenError;
-    return {
-      status: frozen ? 200 : 409,
-      body: {
-        ok: Boolean(frozen),
-        locked: true,
-        forecast: frozen || null,
-        error: frozen ? null : "fact already exists; forecast cannot be created after the draw"
-      }
-    };
+  const cutoffAt = await resolveCutoff(db, target, fact);
+  const factComplete = Boolean(fact && cleanNumbers(fact.result_numbers).length === 20);
+
+  if (factComplete) {
+    if (!existing) {
+      return {
+        status: 409,
+        body: { ok: false, locked: true, error: "fact already exists; forecast cannot be created after the draw" }
+      };
+    }
+    const frozen = await freezeExisting(db, existing, cutoffAt);
+    return { status: 200, body: { ok: true, locked: true, forecast: frozen } };
   }
 
-  const { data: shots, error: screenshotError } = await db
+  if (!cutoffAt) {
+    return { status: 409, body: { ok: false, error: "target cutoff could not be resolved" } };
+  }
+
+  const cutoffMs = new Date(cutoffAt).getTime();
+  if (!Number.isFinite(cutoffMs)) {
+    return { status: 409, body: { ok: false, error: "invalid target cutoff" } };
+  }
+
+  const lockNow = Date.now() >= cutoffMs;
+  if (existing && (existing.frozen_at || lockNow)) {
+    const frozen = lockNow ? await freezeExisting(db, existing, cutoffAt) : existing;
+    return { status: 200, body: { ok: true, locked: true, forecast: frozen } };
+  }
+
+  const { data: allShots, error: screenshotError } = await db
     .from("screenshots")
     .select("id,ocr_numbers,created_at")
     .eq("target_draw_number", target)
@@ -156,9 +285,14 @@ async function saveForecast(db: any, target: number) {
     .order("created_at", { ascending: true });
   if (screenshotError) throw screenshotError;
 
-  const frequent = frequentFromShots(shots || []);
+  const preCutoffShots = (allShots || []).filter((s: any) => {
+    const t = new Date(s.created_at).getTime();
+    return Number.isFinite(t) && t < cutoffMs;
+  });
+  const excludedLate = Math.max(0, (allShots || []).length - preCutoffShots.length);
+  const frequent = frequentFromShots(preCutoffShots);
   if (!frequent.usable.length) {
-    return { status: 409, body: { ok: false, error: "no verified screenshots for target draw" } };
+    return { status: 409, body: { ok: false, error: "no verified pre-cutoff screenshots for target draw" } };
   }
 
   const { data: historyRows, error: historyError } = await db
@@ -168,25 +302,55 @@ async function saveForecast(db: any, target: number) {
   if (historyError) throw historyError;
 
   const forecast = buildForecast(frequent.usable, historyRows || []);
+  const inputFingerprint = await fingerprintShots(frequent.usableShots);
+  const sourceIds = frequent.usableShots.map((s: any) => String(s.id));
   const now = new Date().toISOString();
-  const { data: saved, error: saveError } = await db
-    .from("possible_output_archive")
-    .upsert({
-      target_draw_number: target,
-      combo: forecast.combo,
-      candidates: forecast.candidates,
-      frequent_numbers: frequent.numbers,
-      frequent_counts: frequent.counts,
-      screenshot_count: frequent.usable.length,
-      history_cycles: forecast.cycles,
-      model_version: "virtus-possible-output-v2-auto",
-      updated_at: now
-    }, { onConflict: "target_draw_number" })
-    .select("*")
-    .single();
-  if (saveError) throw saveError;
 
-  return { status: 200, body: { ok: true, locked: false, forecast: saved } };
+  const payload = {
+    target_draw_number: target,
+    combo: forecast.combo,
+    candidates: forecast.candidates,
+    frequent_numbers: frequent.numbers,
+    frequent_counts: frequent.counts,
+    screenshot_count: frequent.usable.length,
+    history_cycles: forecast.cycles,
+    model_version: MODEL_VERSION,
+    cutoff_at: cutoffAt,
+    source_screenshot_ids: sourceIds,
+    input_fingerprint: inputFingerprint,
+    excluded_late_screenshot_count: excludedLate,
+    frozen_at: lockNow ? now : null,
+    updated_at: now
+  };
+
+  if (existing &&
+      existing.input_fingerprint === inputFingerprint &&
+      Number(existing.history_cycles || 0) === Number(forecast.cycles || 0) &&
+      existing.model_version === MODEL_VERSION) {
+    return { status: 200, body: { ok: true, locked: false, forecast: existing } };
+  }
+
+  let saved: any = null;
+  if (existing) {
+    const { data, error } = await db
+      .from("possible_output_archive")
+      .update(payload)
+      .eq("id", existing.id)
+      .select("*")
+      .single();
+    if (error) throw error;
+    saved = data;
+  } else {
+    const { data, error } = await db
+      .from("possible_output_archive")
+      .insert(payload)
+      .select("*")
+      .single();
+    if (error) throw error;
+    saved = data;
+  }
+
+  return { status: 200, body: { ok: true, locked: Boolean(saved?.frozen_at), forecast: saved } };
 }
 
 Deno.serve(async (req: Request) => {
@@ -211,7 +375,7 @@ Deno.serve(async (req: Request) => {
       const limit = Math.min(100, Math.max(1, Number(body?.limit) || 40));
       const { data: forecasts, error: archiveError } = await db
         .from("possible_output_archive")
-        .select("target_draw_number,combo,candidates,frequent_numbers,frequent_counts,screenshot_count,history_cycles,model_version,created_at,updated_at")
+        .select("target_draw_number,combo,candidates,frequent_numbers,frequent_counts,screenshot_count,history_cycles,model_version,created_at,updated_at,cutoff_at,frozen_at,source_screenshot_ids,input_fingerprint,excluded_late_screenshot_count")
         .order("target_draw_number", { ascending: false })
         .limit(limit);
       if (archiveError) throw archiveError;
@@ -242,6 +406,7 @@ Deno.serve(async (req: Request) => {
           combo,
           frequent_numbers: frequentNumbers,
           checked,
+          locked: Boolean(row.frozen_at || checked),
           fact_numbers: checked ? fact : [],
           hit_numbers: hitNumbers,
           hit_count: hitNumbers.length,
