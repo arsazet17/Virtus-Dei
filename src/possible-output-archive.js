@@ -3,8 +3,29 @@ import { invokeFunction } from './services/functions.js'
 
 let lastSavedSignature = ''
 let archiveLoading = false
+let syncTimer = null
 
 const pad = n => String(n).padStart(2, '0')
+
+function tierShort(tier) {
+  if (tier === 'direct') return 'прямо'
+  if (tier === 'neighbor_1') return '±1'
+  if (tier === 'neighbor_2') return '±2'
+  if (tier === 'same_column') return 'столб'
+  return 'холодный'
+}
+
+function verifiedCountFromPage() {
+  const text = String(document.querySelector('.target-status')?.textContent || '')
+  const m = text.match(/(\d+)\s+проверено/i)
+  return m ? Number(m[1]) : null
+}
+
+function visibleShotSignature() {
+  const cards = [...document.querySelectorAll('.shot-card.verified')]
+  if (!cards.length) return ''
+  return cards.map(card => String(card.textContent || '').replace(/\s+/g, ' ').trim()).join('|')
+}
 
 function currentPrediction() {
   const panel = document.querySelector('#kinship-pre-panel')
@@ -24,9 +45,16 @@ function currentPrediction() {
   const combo = candidates.map(x => x.number)
   if (combo.length !== 10 || new Set(combo).size !== 10) return null
   const label = String(panel.querySelector('.kin-combo-label')?.textContent || '')
-  const countMatch = label.match(/текущим\s+(\d+)\s+скрин/i)
-  const screenshotCount = countMatch ? Number(countMatch[1]) : 0
+  const countMatch = label.match(/(?:текущим|сервер[^·]*·)\s*(\d+)\s+скрин/i)
+  const panelCount = countMatch ? Number(countMatch[1]) : 0
+  const verifiedCount = verifiedCountFromPage()
+  const screenshotCount = Number.isFinite(verifiedCount) ? verifiedCount : panelCount
   return { panel, target, combo, candidates, screenshotCount }
+}
+
+function predictionSignature(current) {
+  if (!current) return ''
+  return `${current.target}:${current.screenshotCount}:${current.combo.join('-')}:${visibleShotSignature()}`
 }
 
 function setSaveState(panel, text, kind = 'ok') {
@@ -41,22 +69,64 @@ function setSaveState(panel, text, kind = 'ok') {
   badge.textContent = text
 }
 
+function applyServerForecast(panel, forecast, locked) {
+  if (!panel || !forecast) return
+  const combo = Array.isArray(forecast.combo) ? forecast.combo.map(Number).filter(Number.isFinite) : []
+  const candidates = Array.isArray(forecast.candidates) ? forecast.candidates : []
+  if (combo.length !== 10) return
+
+  const count = Number(forecast.screenshot_count || 0)
+  const label = panel.querySelector('.kin-combo-label')
+  if (label) label.textContent = `КОМБА 10 ЧИСЕЛ · сервер · ${count} скрин. до cutoff${locked ? ' · FROZEN' : ''}`
+
+  const comboBox = panel.querySelector('.kin-combo')
+  if (comboBox) {
+    comboBox.innerHTML = combo.map((n, i) => `<span><small>${i + 1}</small>${pad(n)}</span>`).join('')
+  }
+
+  const list = panel.querySelector('.kin-candidates')
+  if (list && candidates.length) {
+    list.innerHTML = candidates.map(item => {
+      const n = Number(item.number)
+      const support = Number(item.support_shots ?? 0)
+      const index = Number(item.index)
+      return `<div class="kin-candidate">
+        <b>${pad(n)}</b>
+        <span>${tierShort(item.relation)} · ${support}/${count} скр.</span>
+        <em>индекс ${Number.isFinite(index) ? index.toFixed(0) : '—'}</em>
+      </div>`
+    }).join('')
+  }
+
+  panel.dataset.poaLocked = locked ? '1' : '0'
+  panel.dataset.poaFingerprint = String(forecast.input_fingerprint || '')
+}
+
 async function saveCurrentPrediction() {
   const current = currentPrediction()
   if (!current) return
-  const signature = `${current.target}:${current.screenshotCount}:${current.combo.join('-')}`
+  if (current.panel.dataset.poaLocked === '1') return
+
+  const signature = predictionSignature(current)
   if (signature === lastSavedSignature) return
   lastSavedSignature = signature
-  setSaveState(current.panel, 'архив…', 'wait')
+  setSaveState(current.panel, 'сервер…', 'wait')
 
   try {
     const data = await invokeFunction('forecast-archive', {
       action: 'save',
-      target_draw_number: current.target,
-      combo: current.combo,
-      candidates: current.candidates
+      target_draw_number: current.target
     })
-    setSaveState(current.panel, data?.locked ? 'архив заморожен ✓' : 'архив сохранён ✓', 'ok')
+    const locked = Boolean(data?.locked)
+    applyServerForecast(current.panel, data?.forecast, locked)
+    setSaveState(current.panel, locked ? 'FROZEN ✓' : 'сервер сохранён ✓', 'ok')
+
+    const after = currentPrediction()
+    lastSavedSignature = predictionSignature(after)
+
+    document.querySelector('#possible-output-history-panel')?.remove()
+    archiveLoading = false
+    loadArchiveIntoView()
   } catch (error) {
     lastSavedSignature = ''
     setSaveState(current.panel, 'архив: ошибка', 'bad')
@@ -103,7 +173,7 @@ function archiveMarkup(rows) {
     <div class="poa-metrics">
       <div><b>${checked.length}</b><span>уже проверено</span></div>
       <div><b>${avgCombo == null ? '—' : avgCombo.toFixed(2)}</b><span>ср. комба HIT /10</span></div>
-      <div><b>${avgFrequent == null ? '—' : avgFrequent.toFixed(2)}</b><span>ср. частые HIT /8</span></div>
+      <div><b>${avgFrequent == null ? '—' : avgFrequent.toFixed(2)}</b><span>ср. TOP‑8 HIT</span></div>
     </div>
     <div class="poa-list">
       ${rows.length ? rows.map(row => {
@@ -111,8 +181,9 @@ function archiveMarkup(rows) {
         const frequentHitSet = new Set((row.frequent_hit_numbers || []).map(Number))
         const frequent = Array.isArray(row.frequent_numbers) ? row.frequent_numbers : []
         const counts = row.frequent_counts || {}
-        const comboStatus = row.checked ? `КОМБО ${Number(row.hit_count || 0)}/10` : 'ожидание факта'
-        const frequentStatus = row.checked && frequent.length ? `ЧАСТЫЕ ${Number(row.frequent_hit_count || 0)}/${frequent.length}` : ''
+        const comboStatus = row.checked ? `КОМБО ${Number(row.hit_count || 0)}/10` : (row.locked ? 'FROZEN' : 'ожидание факта')
+        const frequentStatus = row.checked && frequent.length ? `TOP‑8 ${Number(row.frequent_hit_count || 0)}/${frequent.length}` : ''
+        const late = Number(row.excluded_late_screenshot_count || 0)
         return `<details class="poa-row">
           <summary>
             <b>№${row.target_draw_number}</b>
@@ -121,25 +192,25 @@ function archiveMarkup(rows) {
             <i>⌄</i>
           </summary>
           <div class="poa-body">
-            <div class="poa-caption">ЗАФИКСИРОВАННАЯ КОМБА · 10 ЧИСЕЛ</div>
+            <div class="poa-caption">ЗАФИКСИРОВАННАЯ СЕРВЕРОМ КОМБА · 10 ЧИСЕЛ</div>
             <div class="poa-combo">${(row.combo || []).map(n => `<span class="${hitSet.has(Number(n)) ? 'hit' : ''}">${pad(n)}</span>`).join('')}</div>
             ${row.checked ? `<div class="poa-hitline"><b>Комба попала:</b> ${(row.hit_numbers || []).map(pad).join(', ') || 'нет'} · ${Number(row.hit_count || 0)}/10</div>` : '<div class="poa-hitline muted">Тираж ещё не закрыт фактом.</div>'}
 
             <div class="poa-separator"></div>
-            <div class="poa-caption">ЧАСТО ПОВТОРЯЮЩИЕСЯ НА СКРИНАХ · ТОП-8</div>
+            <div class="poa-caption">TOP‑8 ПО ЧАСТОТЕ НА СКРИНАХ · НЕ «БОЛЬШИНСТВО»</div>
             ${frequent.length
               ? `<div class="poa-combo poa-frequent">${frequent.map(n => frequentChip(n, counts, frequentHitSet)).join('')}</div>`
-              : '<div class="poa-hitline muted">Частые числа для этой старой записи не были зафиксированы.</div>'}
+              : '<div class="poa-hitline muted">TOP‑8 для этой старой записи не был зафиксирован.</div>'}
             ${frequent.length && row.checked
-              ? `<div class="poa-hitline"><b>Частые попали:</b> ${(row.frequent_hit_numbers || []).map(pad).join(', ') || 'нет'} · ${Number(row.frequent_hit_count || 0)}/${frequent.length}</div>`
-              : frequent.length ? '<div class="poa-hitline muted">Проверка частых чисел ждёт официальный факт.</div>' : ''}
+              ? `<div class="poa-hitline"><b>TOP‑8 попали:</b> ${(row.frequent_hit_numbers || []).map(pad).join(', ') || 'нет'} · ${Number(row.frequent_hit_count || 0)}/${frequent.length}</div>`
+              : frequent.length ? '<div class="poa-hitline muted">Проверка TOP‑8 ждёт официальный факт.</div>' : ''}
 
-            <div class="poa-meta">${formatDate(row.updated_at)} · история ${row.history_cycles} циклов · ${row.model_version}</div>
+            <div class="poa-meta">сохранено ${formatDate(row.updated_at)} · cutoff ${formatDate(row.cutoff_at)}${row.frozen_at ? ` · FROZEN ${formatDate(row.frozen_at)}` : ''}${late ? ` · поздних исключено ${late}` : ''} · история ${row.history_cycles} циклов · ${row.model_version}</div>
           </div>
         </details>`
       }).join('') : '<div class="poa-empty">Архив начнёт заполняться автоматически, когда появится первая комба «Возможный выход».</div>'}
     </div>
-    <p class="poa-note">В каждой записи проверяются две независимые дорезультатные линии: комба «Возможный выход» и ТОП‑8 самых частых чисел на проверенных скриншотах. До тиража запись обновляется вместе со скринами; после появления факта замораживается.</p>
+    <p class="poa-note">Сервер сам пересчитывает комбинацию только по verified-скринам ДО cutoff. До cutoff запись обновляется только при изменении входов; после cutoff или появления факта становится FROZEN. Поздние скрины в честную оценку не попадают. TOP‑8 — это просто восемь самых частых чисел, а не большинство.</p>
   </section>`
 }
 
@@ -166,6 +237,11 @@ function sync() {
   loadArchiveIntoView()
 }
 
-const observer = new MutationObserver(sync)
-observer.observe(document.documentElement, { subtree: true, childList: true })
+function scheduleSync() {
+  clearTimeout(syncTimer)
+  syncTimer = setTimeout(sync, 350)
+}
+
+const observer = new MutationObserver(scheduleSync)
+observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true })
 sync()
