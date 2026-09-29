@@ -28,9 +28,79 @@ function uniqueCandidates(items,currentDraw){const seen=new Set();return items.f
 async function firstVisible(page,selectors){for(const selector of selectors)for(const frame of page.frames())try{const loc=frame.locator(selector).first();if(await loc.count()&&await loc.isVisible())return{frame,loc};}catch{}return null;}
 async function login(page){await page.goto(LOGIN_URL,{waitUntil:'domcontentloaded',timeout:90000});const deadline=Date.now()+20000;let user=null,pass=null;while(Date.now()<deadline&&(!user||!pass)){user=await firstVisible(page,['input[type="email"]','input[name*="email" i]','input[name*="login" i]','input[autocomplete="username"]','input[type="text"]']);pass=await firstVisible(page,['input[type="password"]','input[name*="password" i]','input[autocomplete="current-password"]']);if(!user||!pass)await sleep(250);}if(!user||!pass){await page.screenshot({path:'stoloto-oauth-debug.png',fullPage:true}).catch(()=>{});await fs.writeFile('stoloto-oauth-debug.json',JSON.stringify({at:new Date().toISOString(),url:page.url(),error:'OAuth fields not found'},null,2));throw new Error('Stoloto OAuth fields were not found');}await user.loc.fill(STOLOTO_LOGIN);await pass.loc.fill(STOLOTO_PASSWORD);let submitted=false;for(const frame of page.frames()){for(const selector of ['button[type="submit"]','input[type="submit"]'])try{const b=frame.locator(selector).first();if(await b.count()&&await b.isVisible()){await b.click();submitted=true;break;}}catch{}if(submitted)break;}if(!submitted)for(const frame of page.frames())try{const b=frame.getByRole('button',{name:/войти/i}).first();if(await b.count()&&await b.isVisible()){await b.click();submitted=true;break;}}catch{}if(!submitted)throw new Error('Stoloto OAuth submit button was not found');await page.waitForLoadState('domcontentloaded',{timeout:30000}).catch(()=>{});await sleep(3500);}
 async function detectCurrentDraw(page){await page.goto(GAME_URL,{waitUntil:'domcontentloaded',timeout:90000});await sleep(4000);return parseCurrentDraw(await page.locator('body').innerText().catch(()=>''));}
-async function readArchiveOnce(page,currentDraw){const responses=[];const handler=async res=>{try{const ct=String(res.headers()['content-type']||'').toLowerCase();if(ct.includes('application/json'))responses.push({url:res.url(),data:await res.json()});}catch{}};page.on('response',handler);let body='',usedUrl='';try{for(const url of ARCHIVE_URLS){usedUrl=url;try{await page.goto(url,{waitUntil:'domcontentloaded',timeout:90000});await page.waitForLoadState('networkidle',{timeout:25000}).catch(()=>{});await sleep(3000);body=await page.locator('body').innerText().catch(()=>'');if(body&&/№\s*\d{5,}/.test(body))break;}catch{}}}finally{page.off('response',handler);}let candidates=[];for(const response of responses)for(const item of collectCandidates(response.data))candidates.push({...item,source_url:response.url});for(const item of textCandidates(body,currentDraw))candidates.push({...item,source_url:usedUrl});const cols=columnMap(body,currentDraw);const times=drawTimeMap(body,currentDraw);candidates=candidates.map(x=>({...x,column:cols.get(Number(x.draw_number))||null,draw_time:times.get(Number(x.draw_number))||x.draw_time||null}));const clean=uniqueCandidates(candidates,currentDraw);if(!clean.length)throw new Error(`No completed KENO draw with 20 numbers parsed from ${usedUrl}`);return clean.slice(0,10);}
-function chooseConsensus(reads){const votes=new Map();for(let read=0;read<reads.length;read++)for(const item of reads[read]){const key=`${item.draw_number}:${item.result_numbers.join(',')}:${item.column??''}`;const entry=votes.get(key)||{item,reads:new Set()};if(!entry.item.draw_time&&item.draw_time)entry.item={...entry.item,draw_time:item.draw_time};entry.reads.add(read);votes.set(key,entry);}const agreed=[...votes.values()].filter(x=>x.reads.size>=2&&x.item.column).sort((a,b)=>b.item.draw_number-a.item.draw_number);if(!agreed.length)throw new Error('No 2-of-3 stable Stoloto draw consensus with official column');return{...agreed[0].item,stable_reads:agreed[0].reads.size};}
+function parseDateLabel(label) {
+  const raw=String(label||'').trim().toLowerCase();
+  const today=moscowToday();
+  let year=today.year,month=today.month,day=today.day;
+  if(raw==='вчера') {
+    const d=new Date(Date.UTC(year,month-1,day-1));
+    year=d.getUTCFullYear();month=d.getUTCMonth()+1;day=d.getUTCDate();
+  } else if(raw!=='сегодня') {
+    const numeric=raw.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4}|\d{2})$/);
+    const words=raw.match(/^(\d{1,2})\s+([а-яё]+)(?:\s+(\d{4}))?$/);
+    if(numeric){day=+numeric[1];month=+numeric[2];year=+numeric[3];if(year<100)year+=2000;}
+    else if(words&&RU_MONTHS[words[2]]){day=+words[1];month=RU_MONTHS[words[2]];if(words[3])year=+words[3];else if(month>today.month+6)year--;}
+    else return null;
+  }
+  const d=new Date(Date.UTC(year,month-1,day));
+  if(d.getUTCFullYear()!==year||d.getUTCMonth()+1!==month||d.getUTCDate()!==day)return null;
+  return `${year}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+}
+function parseDomRows(rows,currentDraw) {
+  const out=[];
+  for(const row of rows){
+    const id=String(row.text||'').match(/№\s*(\d{6})\b/);
+    const time=String(row.text||'').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
+    const date=parseDateLabel(row.dateLabel);
+    const column=parseColumn(row.context||row.text);
+    if(!id||!time||!date||!column)continue;
+    const draw_number=Number(id[1]);
+    if(currentDraw&&draw_number>=currentDraw)continue;
+    const draw_time=`${date}T${time[1].padStart(2,'0')}:${time[2]}:00+03:00`;
+    if(Date.parse(draw_time)>Date.now()+300000)continue;
+    let result_numbers=null;
+    for(const pool of [row.buttons||[],row.atoms||[]]){
+      const nums=pool.map(x=>String(x).trim()).filter(x=>/^0?(?:[1-9]|[1-7]\d|80)$/.test(x)).map(Number);
+      if(isKeno20(nums)){result_numbers=nums;break;}
+    }
+    // Never slide a 20-number window over page text: time, prizes and counts are not balls.
+    if(!result_numbers)continue;
+    out.push({draw_number,draw_time,column,result_numbers,field:'dom-balls'});
+  }
+  return uniqueCandidates(out,currentDraw);
+}
+async function readArchiveOnce(page,currentDraw){
+  let usedUrl='';
+  for(const url of ARCHIVE_URLS){
+    usedUrl=url;
+    try{
+      await page.goto(url,{waitUntil:'domcontentloaded',timeout:90000});
+      await page.waitForFunction(()=>/№\s*\d{6}/.test(document.body?.innerText||''),{},{timeout:30000});
+      await sleep(2500);
+      const rows=await page.locator('body').evaluate(()=>{
+        const norm=s=>String(s||'').replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ').trim();
+        const drawRx=/№\s*\d{6}/;
+        const dateRx=/^(Сегодня|Вчера|\d{1,2}[.\/-]\d{1,2}[.\/-]\d{2,4}|\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)(?:\s+\d{4})?)$/i;
+        const all=[...document.querySelectorAll('body *')];
+        function dateBefore(el){let best='';for(const n of all){if(n===el||el.contains(n))continue;if(!(n.compareDocumentPosition(el)&Node.DOCUMENT_POSITION_FOLLOWING))continue;const t=norm(n.innerText||n.textContent);if(t&&t.length<40&&dateRx.test(t))best=t;}return best;}
+        let rows=[...document.querySelectorAll('tr')].filter(el=>drawRx.test(el.innerText||''));
+        if(!rows.length)rows=all.filter(el=>drawRx.test(norm(el.innerText))&&![...el.children].some(ch=>drawRx.test(norm(ch.innerText))));
+        return rows.map(el=>{
+          const chunks=[];const add=n=>{if(n){const t=norm(n.innerText||n.textContent);if(t)chunks.push(t);}};
+          add(el);let p=el.parentElement;
+          for(let i=0;p&&i<4;i++,p=p.parentElement){add(p);if(/столб/i.test(chunks.join(' ')))break;}
+          add(el.previousElementSibling);add(el.nextElementSibling);
+          return {text:norm(el.innerText),context:chunks.join('\n'),dateLabel:dateBefore(el),buttons:[...el.querySelectorAll('button')].map(x=>norm(x.innerText||x.textContent)),atoms:[...el.querySelectorAll('[class*="ball" i],[class*="number" i],[class*="win" i]')].map(x=>norm(x.innerText||x.textContent))};
+        });
+      });
+      const parsed=parseDomRows(rows,currentDraw);
+      if(parsed.length)return parsed.slice(0,10).map(x=>({...x,source_url:url}));
+    }catch(e){console.log(`Archive DOM read failed: ${url}: ${e.message}`);}
+  }
+  throw new Error(`No completed KENO draw with exactly 20 DOM balls, date and official column from ${usedUrl}`);
+}
+function chooseConsensus(reads){const votes=new Map();for(let read=0;read<reads.length;read++)for(const item of reads[read]){const key=`${item.draw_number}:${item.result_numbers.join(',')}:${item.column??''}:${item.draw_time??''}`;const entry=votes.get(key)||{item,reads:new Set()};if(!entry.item.draw_time&&item.draw_time)entry.item={...entry.item,draw_time:item.draw_time};entry.reads.add(read);votes.set(key,entry);}const agreed=[...votes.values()].filter(x=>x.reads.size>=2&&x.item.column).sort((a,b)=>b.item.draw_number-a.item.draw_number);if(!agreed.length)throw new Error('No 2-of-3 stable Stoloto draw consensus with official column');return{...agreed[0].item,stable_reads:agreed[0].reads.size};}
 const browser=await chromium.launch({headless:true});let picked,currentDraw=null;try{const context=await browser.newContext({locale:'ru-RU',timezoneId:'Europe/Moscow',viewport:{width:390,height:844}});const page=await context.newPage();await login(page);currentDraw=await detectCurrentDraw(page);console.log('Current Stoloto draw:',currentDraw);const reads=[];for(let i=0;i<READS;i++){const batch=await readArchiveOnce(page,currentDraw);console.log(`Archive read ${i+1}/${READS}: latest=${batch[0]?.draw_number}, time=${batch[0]?.draw_time||'NONE'}, column=${batch[0]?.column}, count=${batch.length}`);reads.push(batch);if(i<READS-1)await sleep(900);}picked=chooseConsensus(reads);}finally{await browser.close();}
-const payload={draw_number:picked.draw_number,draw_time:picked.draw_time||null,result_numbers:picked.result_numbers,column:picked.column,source:'stoloto-oauth',raw:{captured_at:new Date().toISOString(),parser:'virtus-m5m-oauth-column-2of3-v3-official-time',source_url:picked.source_url||null,source_field:picked.field||null,current_draw_seen:currentDraw,stable_reads:picked.stable_reads,official_column:picked.column,official_draw_time:picked.draw_time||null}};
+const payload={draw_number:picked.draw_number,draw_time:picked.draw_time||null,result_numbers:picked.result_numbers,column:picked.column,source:'stoloto-oauth',raw:{captured_at:new Date().toISOString(),parser:'virtus-dom-balls-2of3-v4',source_url:picked.source_url||null,source_field:picked.field||null,current_draw_seen:currentDraw,stable_reads:picked.stable_reads,official_column:picked.column,official_draw_time:picked.draw_time||null}};
 console.log('Confirmed draw:',payload.draw_number,'OFFICIAL TIME:',payload.draw_time,'OFFICIAL COLUMN:',payload.column,payload.result_numbers.join(','));
 const res=await fetch(`${SUPABASE_URL}/functions/v1/draw-ingest`,{method:'POST',headers:{'content-type':'application/json',apikey:SUPABASE_ANON_JWT,authorization:`Bearer ${SUPABASE_ANON_JWT}`},body:JSON.stringify(payload)});const body=await res.text();if(!res.ok)throw new Error(`draw-ingest ${res.status}: ${body}`);console.log(body);
