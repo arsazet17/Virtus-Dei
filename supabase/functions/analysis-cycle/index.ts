@@ -7,6 +7,8 @@ const ALLOWED_ORIGINS = new Set([
   "http://127.0.0.1:5173"
 ]);
 
+const MODEL_VERSION = "virtus-screen-learning-v4-cutoff";
+
 function headers(origin: string) {
   return {
     "content-type": "application/json",
@@ -123,6 +125,12 @@ async function syncLearning(db: any) {
     const fact = cleanNumbers(draw.result_numbers);
     if (fact.length !== 20) continue;
 
+    const cutoffRaw = draw?.raw?.official_draw_time || draw?.draw_time;
+    const cutoffDate = new Date(String(cutoffRaw || ""));
+    if (Number.isNaN(cutoffDate.getTime())) continue;
+    const cutoffAt = cutoffDate.toISOString();
+    const cutoffMs = cutoffDate.getTime();
+
     const { data: shots, error: shotsError } = await db
       .from("screenshots")
       .select("id,ocr_numbers,ocr_confidence,created_at")
@@ -131,10 +139,74 @@ async function syncLearning(db: any) {
       .order("created_at", { ascending: true });
     if (shotsError) throw shotsError;
 
-    const usable = (shots || [])
+    const verified = (shots || [])
       .map((s: any) => ({ ...s, nums: cleanNumbers(s.ocr_numbers) }))
       .filter((s: any) => s.nums.length === 10);
-    if (!usable.length) continue;
+    const usable = verified.filter((s: any) => {
+      const t = new Date(s.created_at).getTime();
+      return Number.isFinite(t) && t < cutoffMs;
+    });
+    const usableIds = new Set(usable.map((s: any) => s.id));
+    const lateVerified = verified.filter((s: any) => !usableIds.has(s.id));
+
+    if (lateVerified.length) {
+      const { error: lateCmpError } = await db
+        .from("comparisons")
+        .delete()
+        .eq("draw_id", draw.id)
+        .in("screenshot_id", lateVerified.map((s: any) => s.id));
+      if (lateCmpError) throw lateCmpError;
+    }
+
+    if (!usable.length) {
+      const emptyFeatures = {
+        union_numbers: [],
+        persistent_numbers: [],
+        union_count: 0,
+        persistent_count: 0,
+        union_hit_count: 0,
+        persistent_hit_count: 0,
+        absent_hit_count: 20,
+        expected_union_hits: 0,
+        expected_persistent_hits: 0,
+        expected_absent_hits: 20,
+        per_screenshot_hits: [],
+        column_frequencies: {},
+        threshold: null,
+        relation_profiles: [],
+        relation_stats: null,
+        cutoff_at: cutoffAt,
+        anti_leakage: true,
+        source_screenshot_ids: [],
+        excluded_late_verified_count: lateVerified.length
+      };
+      const { error: emptyLearnError } = await db
+        .from("learning_observations")
+        .upsert({
+          draw_id: draw.id,
+          target_draw_number: target,
+          screenshot_count: 0,
+          number_frequencies: {},
+          absent_numbers: Array.from({ length: 80 }, (_, i) => i + 1),
+          pair_frequencies: {},
+          features: emptyFeatures,
+          conclusions: {
+            fact_numbers: fact,
+            offered_hit_numbers: [],
+            persistent_hit_numbers: [],
+            absent_hit_numbers: fact,
+            proposed_missed_numbers: [],
+            miss_relations: [],
+            cutoff_at: cutoffAt,
+            status: "no_pre_cutoff_screenshots"
+          },
+          model_version: MODEL_VERSION
+        }, { onConflict: "draw_id" });
+      if (emptyLearnError) throw emptyLearnError;
+      synced++;
+      syncedTargets.push(target);
+      continue;
+    }
 
     const freq = new Map<number, number>();
     const colFreq = Array(11).fill(0);
@@ -187,8 +259,6 @@ async function syncLearning(db: any) {
     const columnFrequencies: Record<string, number> = {};
     for (let c = 1; c <= 10; c++) columnFrequencies[String(c)] = colFreq[c];
 
-    // v3: every number 1..80 gets a labelled relation profile. This is the
-    // training base for future forecasts: no arbitrary weights are imposed here.
     const relationProfiles = Array.from({ length: 80 }, (_, i) => relationProfile(i + 1, usable, freq, factSet));
     const relationStats = buildRelationStats(relationProfiles);
     const missRelations = absentHits.map(n => relationProfiles[n - 1]);
@@ -208,7 +278,11 @@ async function syncLearning(db: any) {
       column_frequencies: columnFrequencies,
       threshold,
       relation_profiles: relationProfiles,
-      relation_stats: relationStats
+      relation_stats: relationStats,
+      cutoff_at: cutoffAt,
+      anti_leakage: true,
+      source_screenshot_ids: usable.map((s: any) => s.id),
+      excluded_late_verified_count: lateVerified.length
     };
 
     const conclusions = {
@@ -218,7 +292,8 @@ async function syncLearning(db: any) {
       absent_hit_numbers: absentHits,
       proposed_missed_numbers: proposedMisses,
       miss_relations: missRelations,
-      status: "computed"
+      cutoff_at: cutoffAt,
+      status: "computed_pre_cutoff"
     };
 
     const comparisonRows = usable.map((shot: any) => {
@@ -233,7 +308,9 @@ async function syncLearning(db: any) {
           selected_numbers: shot.nums,
           expected_hits: 2.5,
           delta_vs_random_expectation: Number((matched.length - 2.5).toFixed(2)),
-          model_version: "virtus-screen-learning-v3-relations"
+          cutoff_at: cutoffAt,
+          anti_leakage: true,
+          model_version: MODEL_VERSION
         }
       };
     });
@@ -254,7 +331,7 @@ async function syncLearning(db: any) {
         pair_frequencies: pairFrequencies,
         features,
         conclusions,
-        model_version: "virtus-screen-learning-v3-relations"
+        model_version: MODEL_VERSION
       }, { onConflict: "draw_id" });
     if (learnError) throw learnError;
 
@@ -262,7 +339,7 @@ async function syncLearning(db: any) {
     syncedTargets.push(target);
   }
 
-  return { synced, targets: syncedTargets, model_version: "virtus-screen-learning-v3-relations" };
+  return { synced, targets: syncedTargets, model_version: MODEL_VERSION };
 }
 
 async function history(db: any, limit = 160) {
