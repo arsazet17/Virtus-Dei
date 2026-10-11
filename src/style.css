@@ -31,3 +31,8 @@ button{cursor:pointer}.error-banner{margin:0 0 10px;padding:10px 12px;border:1px
 .archive-row summary{grid-template-columns:minmax(88px,1.05fr) minmax(120px,1.3fr) minmax(38px,.45fr) minmax(32px,.4fr) 12px;gap:5px}
 .archive-row summary>span{min-width:0}.archive-row summary>span:nth-child(2){white-space:normal;overflow-wrap:normal;font-variant-numeric:tabular-nums}
 @media(max-width:520px){.archive-row summary{grid-template-columns:minmax(75px,1fr) minmax(100px,1.3fr) 35px 31px 10px;font-size:10px;gap:4px;padding:10px 7px}}
+
+/* Four fields only: number, date, time, column */
+.archive-row-simple{display:grid;grid-template-columns:minmax(80px,1.1fr) minmax(90px,1.1fr) minmax(43px,.55fr) minmax(34px,.4fr);align-items:center;gap:6px;padding:12px 10px;font-size:12px;font-variant-numeric:tabular-nums}
+.archive-row-simple .arch-date,.archive-row-simple .arch-time{color:#e1eaf5;white-space:nowrap}
+@media(max-width:520px){.archive-row-simple{grid-template-columns:minmax(75px,1.05fr) minmax(85px,1.1fr) minmax(38px,.55fr) minmax(32px,.4fr);gap:4px;padding:12px 8px;font-size:11px}}
