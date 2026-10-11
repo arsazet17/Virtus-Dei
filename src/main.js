@@ -556,12 +556,15 @@ function learnRow(row) {
 }
 
 function archiveView() {
-  return `${header()}<section class="panel archive-intro"><div class="panel-head"><div><div class="eyebrow">АРХИВ</div><h2>Тиражи и проверки</h2></div><span class="status-pill">${state.draws.length}</span></div><p class="muted-text">Каждая запись содержит номер тиража, дату, время и выпавший столб. Нажмите на тираж, чтобы увидеть все 20 чисел и проверку скриншотов.</p></section><div class="archive-list">${state.draws.slice(0,80).map(archiveRow).join('')}</div>`
+  return `${header()}<section class="panel archive-intro"><div class="panel-head"><div><div class="eyebrow">АРХИВ</div><h2>Архив тиражей</h2></div><span class="status-pill">${state.draws.length}</span></div><p class="muted-text">Номер тиража, дата, время и выпавший столб.</p></section><div class="archive-list">${state.draws.slice(0,80).map(archiveRow).join('')}</div>`
 }
 
 function archiveRow(draw) {
-  const check = checkDraw(draw)
-  return `<details class="archive-row"><summary><span class="arch-no">№${draw.draw_number}</span><span>${formatMoscow(officialTime(draw))}</span><span class="arch-col">ст${drawColumn(draw)}</span><span class="arch-hit">${check ? `${check.hits.length}/20` : '—'}</span><i>⌄</i></summary><div class="archive-body"><div class="number-grid compact-grid">${cleanNumbers(draw.result_numbers).map(n=>factBall(n,check)).join('')}</div>${check ? `<div class="archive-check"><div><b>Предлагал и вышли</b>${numberChips(check.hits,'hit')}</div><div><b>Обходил, но вышли</b>${numberChips(check.avoidedHits,'missed')}</div></div>` : '<div class="muted-text">Для этого тиража нет сохранённых скриншотов до факта.</div>'}</div></details>`
+  const dateTime = formatMoscow(officialTime(draw))
+  const parts = dateTime.trim().split(/\s+/)
+  const date = parts[0] || '—'
+  const time = parts[1] || '—'
+  return `<div class="archive-row archive-row-simple"><span class="arch-no">№${draw.draw_number}</span><span class="arch-date">${date}</span><span class="arch-time">${time}</span><span class="arch-col">ст${drawColumn(draw)}</span></div>`
 }
 
 function render() {
