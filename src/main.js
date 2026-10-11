@@ -560,11 +560,12 @@ function archiveView() {
 }
 
 function archiveRow(draw) {
+  const check = checkDraw(draw)
   const dateTime = formatMoscow(officialTime(draw))
   const parts = dateTime.trim().split(/\s+/)
   const date = parts[0] || '—'
   const time = parts[1] || '—'
-  return `<div class="archive-row archive-row-simple"><span class="arch-no">№${draw.draw_number}</span><span class="arch-date">${date}</span><span class="arch-time">${time}</span><span class="arch-col">ст${drawColumn(draw)}</span></div>`
+  return `<details class="archive-row"><summary><span class="arch-no">№${draw.draw_number}</span><span class="arch-date">${date}</span><span class="arch-time">${time}</span><span class="arch-col">ст${drawColumn(draw)}</span><i>⌄</i></summary><div class="archive-body"><div class="number-grid compact-grid">${cleanNumbers(draw.result_numbers).map(n=>factBall(n,check)).join('')}</div>${check ? `<div class="archive-check"><div><b>Предлагал и вышли</b>${numberChips(check.hits,'hit')}</div><div><b>Обходил, но вышли</b>${numberChips(check.avoidedHits,'missed')}</div></div>` : '<div class="muted-text">Для этого тиража нет сохранённых скриншотов до факта.</div>'}</div></details>`
 }
 
 function render() {
