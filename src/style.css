@@ -36,3 +36,8 @@ button{cursor:pointer}.error-banner{margin:0 0 10px;padding:10px 12px;border:1px
 .archive-row-simple{display:grid;grid-template-columns:minmax(80px,1.1fr) minmax(90px,1.1fr) minmax(43px,.55fr) minmax(34px,.4fr);align-items:center;gap:6px;padding:12px 10px;font-size:12px;font-variant-numeric:tabular-nums}
 .archive-row-simple .arch-date,.archive-row-simple .arch-time{color:#e1eaf5;white-space:nowrap}
 @media(max-width:520px){.archive-row-simple{grid-template-columns:minmax(75px,1.05fr) minmax(85px,1.1fr) minmax(38px,.55fr) minmax(32px,.4fr);gap:4px;padding:12px 8px;font-size:11px}}
+
+/* Restore expandable archive, four fields in the closed row */
+.archive-row:not(.archive-row-simple) summary{grid-template-columns:minmax(76px,1fr) minmax(83px,1.1fr) minmax(40px,.55fr) minmax(32px,.4fr) 12px;gap:5px}
+.archive-row .arch-date,.archive-row .arch-time{white-space:nowrap;color:#e1eaf5}
+@media(max-width:520px){.archive-row:not(.archive-row-simple) summary{grid-template-columns:minmax(72px,1fr) minmax(78px,1.1fr) minmax(36px,.55fr) minmax(30px,.4fr) 10px;gap:4px;font-size:10px}}
