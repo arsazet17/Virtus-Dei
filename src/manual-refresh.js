@@ -1,4 +1,4 @@
-const APP_VERSION = '0.2.11'
+const APP_VERSION = '0.2.12'
 const REFRESH_FLAG = 'virtus.manualRefresh.v1'
 
 function ensureRefreshUi() {

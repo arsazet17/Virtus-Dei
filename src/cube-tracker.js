@@ -55,6 +55,24 @@ function ticketRows(t, drawsByNo) {
   return rows
 }
 
+// ───── Выигрыши (таблица КЕНО, ставка 100 ₽; доп. ставки по 100 ₽) ─────
+const PAY = {10:{0:200,4:100,5:250,6:750,7:5000,8:50000,9:1000000,10:10000000},9:{0:150,4:150,5:300,6:1000,7:10000,8:210000,9:4000000},8:{0:150,4:200,5:500,6:2500,7:53300,8:1500000},7:{0:150,3:100,4:200,5:1200,6:10000,7:250000},6:{3:200,4:750,5:4180,6:75000},5:{3:400,4:1920,5:20000},4:{2:100,3:300,4:3300},3:{2:300,3:1500},2:{1:100,2:300},1:{1:280}}
+const PAR_PAY = { even: 170, odd: 170, equal: 340 }
+const COL_PAY = 700
+const rub = v => v.toLocaleString('ru-RU') + ' ₽'
+function rowWin(r, t) {
+  if (r.pending) return 0
+  let w = (PAY[t.numbers.length] || {})[r.hits.length] || 0
+  if (r.colHit) w += COL_PAY
+  if (r.parHit) w += PAR_PAY[t.parity] || 0
+  return w
+}
+const ticketCost = t => (t.numbers.length ? 100 : 0) + t.columns.length * 100 + (t.parity ? 100 : 0)
+function money(rows, t) {
+  const done = rows.filter(r => !r.pending)
+  return { won: done.reduce((a, r) => a + rowWin(r, t), 0), spent: done.length * ticketCost(t) }
+}
+
 function summary(rows, t) {
   const done = rows.filter(r => !r.pending)
   if (!done.length) return 'ждём первый тираж'
@@ -79,19 +97,22 @@ function ticketHTML(t, drawsByNo) {
     ''
   ].filter(Boolean).join(' · ')
   const change = changed ? `<div class="cube-change">Куб изменён: ${t.removed.length ? `убрано ${t.removed.join(', ')}` : ''}${t.removed.length && t.added.length ? ' · ' : ''}${t.added.length ? `добавлено ${t.added.join(', ')}` : ''}</div>` : (t.cube_numbers.length && !t._shadow && strategyOf(t) !== 'cube' ? '<div class="cube-change same">Куб без изменений</div>' : '')
+  const m = money(rows, t)
+  const moneyBadge = m.spent ? `<span class="cube-money ${m.won > m.spent ? 'plus' : m.won ? 'some' : ''}">${m.won ? '+' + rub(m.won) : '0 ₽'}</span>` : ''
   const body = rows.map(r => r.pending
     ? `<tr class="pending"><td>№${r.no}</td><td colspan="${changed ? 5 : 4}">ожидание</td></tr>`
-    : `<tr><td>№${r.no}<small>${timeMsk(r.time)}</small></td><td class="${r.hits.length >= 4 ? 'good' : ''}"><b>${r.hits.length}</b>${r.hits.length ? `<small>${r.hits.join(' ')}</small>` : ''}</td>${changed ? `<td>${r.cubeHits.length}<small>${r.removedHits.length ? `убранные: ${r.removedHits.join(' ')}` : ''}${r.addedHits.length ? ` добавл.: ${r.addedHits.join(' ')}` : ''}</small></td>` : ''}<td class="${r.colHit === true ? 'good' : r.colHit === false ? 'bad' : ''}">ст${r.col ?? '—'}</td><td class="${r.parHit === true ? 'good' : r.parHit === false ? 'bad' : ''}">${PARITY[r.par]}</td></tr>`
+    : `<tr><td>№${r.no}<small>${timeMsk(r.time)}</small></td><td class="${r.hits.length >= 4 ? 'good' : ''}"><b>${r.hits.length}</b>${r.hits.length ? `<small>${r.hits.join(' ')}</small>` : ''}</td>${changed ? `<td>${r.cubeHits.length}<small>${r.removedHits.length ? `убранные: ${r.removedHits.join(' ')}` : ''}${r.addedHits.length ? ` добавл.: ${r.addedHits.join(' ')}` : ''}</small></td>` : ''}<td class="${r.colHit === true ? 'good' : r.colHit === false ? 'bad' : ''}">ст${r.col ?? '—'}</td><td class="${r.parHit === true ? 'good' : r.parHit === false ? 'bad' : ''}">${PARITY[r.par]}</td><td class="cube-win${rowWin(r, t) ? ' good' : ''}">${rowWin(r, t) ? '+' + rub(rowWin(r, t)) : '—'}</td></tr>`
   ).join('')
   return `<details class="cube-ticket"${t._open ? ' open' : ''}>
     <summary>
-      <div class="cube-top">${chip(strategyOf(t))}<b>№${t.target_draw_number}</b>${t._strategy === 'iris' ? '<span class="cube-status">авто</span>' : t._shadow ? '<span class="cube-status">без правок</span>' : `<span class="cube-status ${t.status}">${t.status === 'real' ? 'куплен' : 'отслеживаю'}</span>`}<i>⌄</i></div>
+      <div class="cube-top">${chip(strategyOf(t))}<b>№${t.target_draw_number}</b>${t._strategy === 'iris' ? '<span class="cube-status">авто</span>' : t._shadow ? '<span class="cube-status">без правок</span>' : `<span class="cube-status ${t.status}">${t.status === 'real' ? 'куплен' : 'отслеживаю'}</span>`}${moneyBadge}<i>⌄</i></div>
       <div class="cube-balls">${balls}</div>
       ${extra ? `<div class="cube-extra">${esc(extra)}</div>` : ''}
       ${change}
       <div class="cube-sum">${esc(summary(rows, t))}</div>
+      ${m.spent ? `<div class="cube-money-line">Выиграно <b>${rub(m.won)}</b> из ${rub(m.spent)} ставок${m.won > m.spent ? ` · плюс ${rub(m.won - m.spent)}` : ''}</div>` : ''}
     </summary>
-    <table class="cube-table"><thead><tr><th>Тираж</th><th>Совпало</th>${changed ? '<th>Куб дал бы</th>' : ''}<th>Столб</th><th>Чётность</th></tr></thead><tbody>${body}</tbody></table>
+    <table class="cube-table"><thead><tr><th>Тираж</th><th>Совпало</th>${changed ? '<th>Куб дал бы</th>' : ''}<th>Столб</th><th>Чётность</th><th>Выигрыш</th></tr></thead><tbody>${body}</tbody></table>
     ${t.reason || t.note ? `<div class="cube-note">${esc(t.reason || t.note)}</div>` : ''}
   </details>`
 }
@@ -150,7 +171,8 @@ function stratStats(list, byNo) {
   const best = rows.reduce((b, x) => (x.r.hits.length / x.t.numbers.length > b.v ? { v: x.r.hits.length / x.t.numbers.length, h: x.r.hits.length, n: x.t.numbers.length } : b), { v: -1 })
   const big = rows.filter(x => x.r.hits.length >= Math.ceil(x.t.numbers.length * 0.6)).length
   const col = rows.filter(x => x.r.colHit !== null), par = rows.filter(x => x.r.parHit !== null)
-  return { tickets: list.length, draws: rows.length, pct, best: `${best.h} из ${best.n}`, big,
+  const won = rows.reduce((a, x) => a + rowWin(x.r, x.t), 0), spent = rows.reduce((a, x) => a + ticketCost(x.t), 0)
+  return { won, spent, tickets: list.length, draws: rows.length, pct, best: `${best.h} из ${best.n}`, big,
     col: col.length ? `${col.filter(x => x.r.colHit).length}/${col.length}` : '—',
     par: par.length ? `${par.filter(x => x.r.parHit).length}/${par.length}` : '—' }
 }
@@ -160,7 +182,7 @@ function compareHTML(groups, byNo) {
     const st = stratStats(groups[k] || [], byNo)
     const tone = !st.draws ? '' : st.pct > 25 ? 'up' : st.pct < 25 ? 'down' : ''
     return `<button class="cmp-row ${state.filter === k ? 'on' : ''}" data-cube-filter="${k}">
-      <span class="cmp-name">${chip(k)}<small>${STRATS[k].hint}</small></span>
+      <span class="cmp-name">${chip(k)}<small>${STRATS[k].hint}</small>${st.draws ? `<small class="cmp-money">выиграно ${rub(st.won)} из ${rub(st.spent)}</small>` : ''}</span>
       <span class="cmp-pct ${tone}">${st.draws ? st.pct + '%' : '—'}<small>${st.draws ? (tone === 'up' ? 'ведёт' : tone === 'down' ? 'уводит' : 'норма') : 'ждём тиражи'}</small></span>
       <span class="cmp-cell"><b>${st.tickets}</b><small>билетов</small></span>
       <span class="cmp-cell"><b>${st.draws ? st.best : '—'}</b><small>лучший</small></span>

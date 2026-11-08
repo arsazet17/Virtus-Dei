@@ -60,3 +60,15 @@
   .cmp-name{grid-column:1 / span 3}
   .cmp-pct{grid-column:4 / span 2}
 }
+
+/* выигрыши */
+.cube-money{font-size:13px;font-weight:900;padding:3px 10px;border-radius:999px;border:1px solid var(--line);color:var(--muted);margin-left:auto;white-space:nowrap}
+.cube-money.some{color:var(--gold);border-color:#7a6224;background:#2a2410}
+.cube-money.plus{color:var(--green);border-color:var(--green);background:var(--green2)}
+.cube-money + i{margin-left:8px!important}
+.cube-money-line{font-size:13px;color:var(--text);margin-top:4px}
+.cube-money-line b{color:var(--gold)}
+.cube-table td.cube-win{white-space:nowrap;font-weight:700;color:var(--muted)}
+.cube-table td.cube-win.good{color:var(--green)}
+.cmp-money{color:var(--gold)!important}
+@media(max-width:620px){.cube-table th,.cube-table td{padding:7px 6px}}
