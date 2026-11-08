@@ -221,6 +221,10 @@ async function build() {
   groups.cube.push(...cubeShadows(list))
   return { groups, byNo }
 }
+let cacheHTML = ''
+let cacheAt = 0
+let inflight = null
+
 function paint(root, html) {
   root.dataset.filled = '1'
   root.innerHTML = html
