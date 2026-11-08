@@ -45,9 +45,12 @@ function ticketRows(t, drawsByNo) {
     const fact = clean(d.result_numbers)
     const set = new Set(fact)
     const hits = t.numbers.filter(n => set.has(n))
+    const cubeHits = t.cube_numbers.length ? t.cube_numbers.filter(n => set.has(n)) : null
+    const removedHits = t.removed.filter(n => set.has(n))
+    const addedHits = t.added.filter(n => set.has(n))
     const col = drawColumn(d)
     const par = drawParity(fact)
-    rows.push({ no, time: d.draw_time, hits, col, colHit: t.columns.length ? t.columns.includes(col) : null, par, parHit: t.parity ? t.parity === par : null })
+    rows.push({ no, time: d.draw_time, hits, cubeHits, removedHits, addedHits, col, colHit: t.columns.length ? t.columns.includes(col) : null, par, parHit: t.parity ? t.parity === par : null })
   }
   return rows
 }
@@ -66,24 +69,30 @@ function summary(rows, t) {
 function ticketHTML(t, drawsByNo) {
   const rows = ticketRows(t, drawsByNo)
   const allHits = new Set(rows.flatMap(r => r.hits || []))
-  const balls = t.numbers.map(n => `<span class="cube-ball${allHits.has(n) ? ' hit' : ''}">${n}</span>`).join('')
+  const addedSet = new Set(t.added)
+  const balls = t.numbers.map(n => `<span class="cube-ball${allHits.has(n) ? ' hit' : ''}${addedSet.has(n) ? ' added' : ''}">${n}</span>`).join('')
+    + t.removed.map(n => `<span class="cube-ball removed" title="убрано из куба">${n}</span>`).join('')
+  const changed = t.removed.length || t.added.length
   const extra = [
     t.columns.length ? `столбы ${t.columns.join(', ')}` : '',
-    t.parity ? `чётность: ${PARITY[t.parity]}` : ''
+    t.parity ? `чётность: ${PARITY[t.parity]}` : '',
+    t.algo ? `алгоритм ${t.algo}` : ''
   ].filter(Boolean).join(' · ')
+  const change = changed ? `<div class="cube-change">Куб изменён: ${t.removed.length ? `убрано ${t.removed.join(', ')}` : ''}${t.removed.length && t.added.length ? ' · ' : ''}${t.added.length ? `добавлено ${t.added.join(', ')}` : ''}</div>` : (t.cube_numbers.length ? '<div class="cube-change same">Куб без изменений</div>' : '')
   const body = rows.map(r => r.pending
-    ? `<tr class="pending"><td>№${r.no}</td><td colspan="4">ожидание</td></tr>`
-    : `<tr><td>№${r.no}<small>${timeMsk(r.time)}</small></td><td class="${r.hits.length >= 4 ? 'good' : ''}"><b>${r.hits.length}</b>${r.hits.length ? `<small>${r.hits.join(' ')}</small>` : ''}</td><td class="${r.colHit === true ? 'good' : r.colHit === false ? 'bad' : ''}">ст${r.col ?? '—'}</td><td class="${r.parHit === true ? 'good' : r.parHit === false ? 'bad' : ''}">${PARITY[r.par]}</td></tr>`
+    ? `<tr class="pending"><td>№${r.no}</td><td colspan="${changed ? 5 : 4}">ожидание</td></tr>`
+    : `<tr><td>№${r.no}<small>${timeMsk(r.time)}</small></td><td class="${r.hits.length >= 4 ? 'good' : ''}"><b>${r.hits.length}</b>${r.hits.length ? `<small>${r.hits.join(' ')}</small>` : ''}</td>${changed ? `<td>${r.cubeHits.length}<small>${r.removedHits.length ? `убранные: ${r.removedHits.join(' ')}` : ''}${r.addedHits.length ? ` добавл.: ${r.addedHits.join(' ')}` : ''}</small></td>` : ''}<td class="${r.colHit === true ? 'good' : r.colHit === false ? 'bad' : ''}">ст${r.col ?? '—'}</td><td class="${r.parHit === true ? 'good' : r.parHit === false ? 'bad' : ''}">${PARITY[r.par]}</td></tr>`
   ).join('')
   return `<details class="cube-ticket"${t._open ? ' open' : ''}>
     <summary>
       <div class="cube-top"><b>№${t.target_draw_number}</b><span class="cube-status ${t.status}">${t.status === 'real' ? 'куплен' : 'отслеживаю'}</span><i>⌄</i></div>
       <div class="cube-balls">${balls}</div>
       ${extra ? `<div class="cube-extra">${esc(extra)}</div>` : ''}
+      ${change}
       <div class="cube-sum">${esc(summary(rows, t))}</div>
     </summary>
-    <table class="cube-table"><thead><tr><th>Тираж</th><th>Совпало</th><th>Столб</th><th>Чётность</th></tr></thead><tbody>${body}</tbody></table>
-    ${t.note ? `<div class="cube-note">${esc(t.note)}</div>` : ''}
+    <table class="cube-table"><thead><tr><th>Тираж</th><th>Совпало</th>${changed ? '<th>Куб дал бы</th>' : ''}<th>Столб</th><th>Чётность</th></tr></thead><tbody>${body}</tbody></table>
+    ${t.reason || t.note ? `<div class="cube-note">${esc(t.reason || t.note)}</div>` : ''}
   </details>`
 }
 
@@ -94,14 +103,20 @@ function aggregate(tickets, drawsByNo) {
   const avgFirst = first.length ? (first.reduce((a, x) => a + x.r.hits.length / Math.max(1, x.t.numbers.length), 0) / first.length * 100).toFixed(0) : '—'
   const avgAll = (done.reduce((a, x) => a + x.r.hits.length / Math.max(1, x.t.numbers.length), 0) / done.length * 100).toFixed(0)
   const colRows = done.filter(x => x.r.colHit !== null), parRows = done.filter(x => x.r.parHit !== null)
+  const edited = done.filter(x => x.t.removed.length || x.t.added.length)
+  const remHits = edited.reduce((a, x) => a + x.r.removedHits.length, 0), remTot = edited.reduce((a, x) => a + x.t.removed.length, 0)
+  const addHits = edited.reduce((a, x) => a + x.r.addedHits.length, 0), addTot = edited.reduce((a, x) => a + x.t.added.length, 0)
+  const pct = (h, n) => n ? Math.round(h / n * 100) + '%' : '—'
   return `<div class="cube-agg">
     <div><b>${tickets.length}</b><span>билетов</span></div>
     <div><b>${avgFirst}%</b><span>чисел совпало в свой тираж</span></div>
     <div><b>${avgAll}%</b><span>за все 10 тиражей</span></div>
     <div><b>${colRows.length ? colRows.filter(x => x.r.colHit).length + '/' + colRows.length : '—'}</b><span>столб угадан</span></div>
     <div><b>${parRows.length ? parRows.filter(x => x.r.parHit).length + '/' + parRows.length : '—'}</b><span>чётность угадана</span></div>
+    <div><b>${pct(remHits, remTot)}</b><span>убранные числа всё же вышли</span></div>
+    <div><b>${pct(addHits, addTot)}</b><span>добавленные числа вышли</span></div>
   </div>
-  <p class="cube-hint">Норма для случайных 10 чисел — 25% совпадений (20 из 80). Выше нормы — куб «ведёт», ниже — «уводит».</p>`
+  <p class="cube-hint">Норма для любых чисел — 25% (20 из 80). Выше нормы — ведёт, ниже — уводит. Правка куба полезна, если добавленные выходят чаще 25%, а убранные — реже.</p>`
 }
 
 let cacheHTML = ''
@@ -112,7 +127,7 @@ async function build() {
   if (!supabase) throw new Error('Supabase не настроен')
   const { data: tickets, error } = await supabase.from('cube_tickets').select('*').order('created_at', { ascending: false }).limit(60)
   if (error) throw error
-  const list = (tickets || []).map(t => ({ ...t, numbers: clean(t.numbers), columns: (t.columns || []).map(Number) }))
+  const list = (tickets || []).map(t => ({ ...t, numbers: clean(t.numbers), cube_numbers: clean(t.cube_numbers), removed: clean(t.removed), added: clean(t.added), columns: (t.columns || []).map(Number) }))
   if (!list.length) {
     return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО</div><h2>Билетов пока нет</h2></div></div><p class="muted-text">Скажите Claude: «зайди в Кено, нажми кубик и отправь билет в Virtus Dei». Билет появится здесь, и приложение будет вести его 10 тиражей.</p>`
   }

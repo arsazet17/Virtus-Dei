@@ -24,3 +24,7 @@
 .cube-table td.bad{color:var(--red)}
 .cube-table tr.pending td{color:var(--muted)}
 .cube-note{font-size:12px;color:var(--muted);padding:8px 12px;border-top:1px solid var(--line)}
+.cube-ball.added{border-style:dashed;border-color:var(--gold)}
+.cube-ball.removed{opacity:.45;text-decoration:line-through}
+.cube-change{font-size:12px;color:var(--amber);margin-top:4px}
+.cube-change.same{color:var(--muted)}
