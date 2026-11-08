@@ -104,40 +104,54 @@ function aggregate(tickets, drawsByNo) {
   <p class="cube-hint">Норма для случайных 10 чисел — 25% совпадений (20 из 80). Выше нормы — куб «ведёт», ниже — «уводит».</p>`
 }
 
-let loading = false
-async function fill(root) {
-  if (loading) return
-  loading = true
-  try {
-    if (!supabase) throw new Error('Supabase не настроен')
-    const { data: tickets, error } = await supabase.from('cube_tickets').select('*').order('created_at', { ascending: false }).limit(60)
-    if (error) throw error
-    const list = (tickets || []).map(t => ({ ...t, numbers: clean(t.numbers), columns: (t.columns || []).map(Number) }))
-    if (!list.length) {
-      root.innerHTML = `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО</div><h2>Билетов пока нет</h2></div></div><p class="muted-text">Скажите Claude: «зайди в Кено, нажми кубик и отправь билет в Virtus Dei». Билет появится здесь, и приложение будет вести его 10 тиражей.</p>`
-      return
-    }
-    const min = Math.min(...list.map(t => t.target_draw_number))
-    const max = Math.max(...list.map(t => t.target_draw_number + t.track_draws - 1))
-    const { data: draws, error: dErr } = await supabase.from('draws').select('draw_number,draw_time,result_numbers,raw').gte('draw_number', min).lte('draw_number', max)
-    if (dErr) throw dErr
-    const byNo = new Map((draws || []).map(d => [Number(d.draw_number), d]))
-    if (list[0]) list[0]._open = true
-    root.innerHTML = `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО · ХОД ПО ТИРАЖАМ</div><h2>Что даёт куб</h2></div><button class="icon-btn" data-cube-reload aria-label="Обновить">↻</button></div>
-      ${aggregate(list, byNo)}
-      ${list.map(t => ticketHTML(t, byNo)).join('')}`
-    root.querySelector('[data-cube-reload]')?.addEventListener('click', () => { root.dataset.filled = ''; fill(root) })
-  } catch (e) {
-    root.innerHTML = `<p class="muted-text">Не удалось загрузить билеты куба: ${esc(e.message || e)}</p>`
-  } finally {
-    loading = false
-    root.dataset.filled = '1'
+let cacheHTML = ''
+let cacheAt = 0
+let inflight = null
+
+async function build() {
+  if (!supabase) throw new Error('Supabase не настроен')
+  const { data: tickets, error } = await supabase.from('cube_tickets').select('*').order('created_at', { ascending: false }).limit(60)
+  if (error) throw error
+  const list = (tickets || []).map(t => ({ ...t, numbers: clean(t.numbers), columns: (t.columns || []).map(Number) }))
+  if (!list.length) {
+    return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО</div><h2>Билетов пока нет</h2></div></div><p class="muted-text">Скажите Claude: «зайди в Кено, нажми кубик и отправь билет в Virtus Dei». Билет появится здесь, и приложение будет вести его 10 тиражей.</p>`
   }
+  const min = Math.min(...list.map(t => t.target_draw_number))
+  const max = Math.max(...list.map(t => t.target_draw_number + t.track_draws - 1))
+  const { data: draws, error: dErr } = await supabase.from('draws').select('draw_number,draw_time,result_numbers,raw').gte('draw_number', min).lte('draw_number', max)
+  if (dErr) throw dErr
+  const byNo = new Map((draws || []).map(d => [Number(d.draw_number), d]))
+  list[0]._open = true
+  return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО · ХОД ПО ТИРАЖАМ</div><h2>Что даёт куб</h2></div><button class="icon-btn" data-cube-reload aria-label="Обновить">↻</button></div>
+    ${aggregate(list, byNo)}
+    ${list.map(t => ticketHTML(t, byNo)).join('')}`
+}
+
+function paint(root, html) {
+  root.dataset.filled = '1'
+  root.innerHTML = html
+  root.querySelector('[data-cube-reload]')?.addEventListener('click', () => { cacheAt = 0; refresh() })
+}
+
+function refresh() {
+  if (inflight) return inflight
+  inflight = build()
+    .then(html => { cacheHTML = html; cacheAt = Date.now() })
+    .catch(e => { cacheHTML = `<p class="muted-text">Не удалось загрузить билеты куба: ${esc(e.message || e)}</p>`; cacheAt = Date.now() })
+    .finally(() => {
+      inflight = null
+      const root = document.getElementById('cube-root')
+      if (root) paint(root, cacheHTML)
+    })
+  return inflight
 }
 
 const watch = () => {
   const root = document.getElementById('cube-root')
-  if (root && root.dataset.filled !== '1') fill(root)
+  if (!root || root.dataset.filled === '1') return
+  if (cacheHTML) paint(root, cacheHTML)
+  else root.dataset.filled = '1'
+  if (!cacheHTML || Date.now() - cacheAt > 60000) refresh()
 }
 new MutationObserver(watch).observe(document.body, { childList: true, subtree: true })
 watch()
