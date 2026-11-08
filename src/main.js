@@ -272,6 +272,7 @@ function header() {
     ${navButton('screens','Скриншоты')}
     ${navButton('analysis','Анализ')}
     ${navButton('archive','Архив')}
+    ${navButton('cube','Куб')}
   </nav>`
 }
 
@@ -285,6 +286,7 @@ function footer() {
     ${footButton('screens','▧','Скрины')}
     ${footButton('analysis','⌁','Анализ')}
     ${footButton('archive','▦','Архив')}
+    ${footButton('cube','🎲','Куб')}
   </footer>`
 }
 
@@ -573,6 +575,7 @@ function render() {
   if (state.page === 'screens') body = screenshotsView()
   if (state.page === 'analysis') body = analysisView()
   if (state.page === 'archive') body = archiveView()
+  if (state.page === 'cube') body = `${header()}<section class="panel" id="cube-root"><p class="muted-text">Загружаю билеты куба…</p></section>`
   app.innerHTML = `<div class="app-shell">${state.error ? `<div class="error-banner">${esc(state.error)}</div>` : ''}${body}</div>${footer()}`
   bind()
 }

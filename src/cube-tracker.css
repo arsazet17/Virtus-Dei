@@ -1,0 +1,26 @@
+.cube-agg{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin:10px 0 6px}
+.cube-agg>div{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:2px}
+.cube-agg b{font-size:20px;color:var(--gold)}
+.cube-agg span{font-size:12px;color:var(--muted)}
+.cube-hint{font-size:12px;color:var(--muted);margin:4px 0 12px}
+.cube-ticket{background:var(--panel2);border:1px solid var(--line);border-radius:14px;margin:10px 0;overflow:hidden}
+.cube-ticket summary{list-style:none;cursor:pointer;padding:12px}
+.cube-ticket summary::-webkit-details-marker{display:none}
+.cube-top{display:flex;align-items:center;gap:8px}
+.cube-top i{margin-left:auto;color:var(--muted);font-style:normal}
+.cube-ticket[open] .cube-top i{transform:rotate(180deg)}
+.cube-status{font-size:11px;padding:2px 8px;border-radius:999px;background:var(--panel);border:1px solid var(--line);color:var(--muted)}
+.cube-status.real{background:var(--green2);border-color:var(--green);color:var(--green)}
+.cube-balls{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
+.cube-ball{min-width:30px;height:30px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:700;font-size:13px;background:var(--panel);border:1px solid var(--line);color:var(--text)}
+.cube-ball.hit{background:var(--green2);border-color:var(--green);color:var(--green)}
+.cube-extra{font-size:12px;color:var(--cyan)}
+.cube-sum{font-size:12px;color:var(--muted);margin-top:4px}
+.cube-table{width:100%;border-collapse:collapse;font-size:13px}
+.cube-table th{font-size:11px;font-weight:600;color:var(--muted);text-align:left;padding:6px 10px;border-top:1px solid var(--line)}
+.cube-table td{padding:7px 10px;border-top:1px solid var(--line);vertical-align:top}
+.cube-table td small{display:block;font-size:11px;color:var(--muted)}
+.cube-table td.good{color:var(--green)}
+.cube-table td.bad{color:var(--red)}
+.cube-table tr.pending td{color:var(--muted)}
+.cube-note{font-size:12px;color:var(--muted);padding:8px 12px;border-top:1px solid var(--line)}
