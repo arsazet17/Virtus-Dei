@@ -72,20 +72,20 @@ function ticketHTML(t, drawsByNo) {
   const addedSet = new Set(t.added)
   const balls = t.numbers.map(n => `<span class="cube-ball${allHits.has(n) ? ' hit' : ''}${addedSet.has(n) ? ' added' : ''}">${n}</span>`).join('')
     + t.removed.map(n => `<span class="cube-ball removed" title="убрано из куба">${n}</span>`).join('')
-  const changed = t.removed.length || t.added.length
+  const changed = !t._shadow && (t.removed.length || t.added.length)
   const extra = [
     t.columns.length ? `столбы ${t.columns.join(', ')}` : '',
     t.parity ? `чётность: ${PARITY[t.parity]}` : '',
-    t.algo ? `алгоритм ${t.algo}` : ''
+    ''
   ].filter(Boolean).join(' · ')
-  const change = changed ? `<div class="cube-change">Куб изменён: ${t.removed.length ? `убрано ${t.removed.join(', ')}` : ''}${t.removed.length && t.added.length ? ' · ' : ''}${t.added.length ? `добавлено ${t.added.join(', ')}` : ''}</div>` : (t.cube_numbers.length ? '<div class="cube-change same">Куб без изменений</div>' : '')
+  const change = changed ? `<div class="cube-change">Куб изменён: ${t.removed.length ? `убрано ${t.removed.join(', ')}` : ''}${t.removed.length && t.added.length ? ' · ' : ''}${t.added.length ? `добавлено ${t.added.join(', ')}` : ''}</div>` : (t.cube_numbers.length && !t._shadow && strategyOf(t) !== 'cube' ? '<div class="cube-change same">Куб без изменений</div>' : '')
   const body = rows.map(r => r.pending
     ? `<tr class="pending"><td>№${r.no}</td><td colspan="${changed ? 5 : 4}">ожидание</td></tr>`
     : `<tr><td>№${r.no}<small>${timeMsk(r.time)}</small></td><td class="${r.hits.length >= 4 ? 'good' : ''}"><b>${r.hits.length}</b>${r.hits.length ? `<small>${r.hits.join(' ')}</small>` : ''}</td>${changed ? `<td>${r.cubeHits.length}<small>${r.removedHits.length ? `убранные: ${r.removedHits.join(' ')}` : ''}${r.addedHits.length ? ` добавл.: ${r.addedHits.join(' ')}` : ''}</small></td>` : ''}<td class="${r.colHit === true ? 'good' : r.colHit === false ? 'bad' : ''}">ст${r.col ?? '—'}</td><td class="${r.parHit === true ? 'good' : r.parHit === false ? 'bad' : ''}">${PARITY[r.par]}</td></tr>`
   ).join('')
   return `<details class="cube-ticket"${t._open ? ' open' : ''}>
     <summary>
-      <div class="cube-top"><b>№${t.target_draw_number}</b><span class="cube-status ${t.status}">${t.status === 'real' ? 'куплен' : 'отслеживаю'}</span><i>⌄</i></div>
+      <div class="cube-top">${chip(strategyOf(t))}<b>№${t.target_draw_number}</b>${t._strategy === 'iris' ? '<span class="cube-status">авто</span>' : t._shadow ? '<span class="cube-status">без правок</span>' : `<span class="cube-status ${t.status}">${t.status === 'real' ? 'куплен' : 'отслеживаю'}</span>`}<i>⌄</i></div>
       <div class="cube-balls">${balls}</div>
       ${extra ? `<div class="cube-extra">${esc(extra)}</div>` : ''}
       ${change}
@@ -96,62 +96,146 @@ function ticketHTML(t, drawsByNo) {
   </details>`
 }
 
-function aggregate(tickets, drawsByNo) {
-  const done = tickets.flatMap(t => ticketRows(t, drawsByNo).filter(r => !r.pending).map(r => ({ r, t })))
-  if (!done.length) return ''
-  const first = tickets.map(t => ({ t, r: ticketRows(t, drawsByNo)[0] })).filter(x => x.r && !x.r.pending)
-  const avgFirst = first.length ? (first.reduce((a, x) => a + x.r.hits.length / Math.max(1, x.t.numbers.length), 0) / first.length * 100).toFixed(0) : '—'
-  const avgAll = (done.reduce((a, x) => a + x.r.hits.length / Math.max(1, x.t.numbers.length), 0) / done.length * 100).toFixed(0)
-  const colRows = done.filter(x => x.r.colHit !== null), parRows = done.filter(x => x.r.parHit !== null)
-  const edited = done.filter(x => x.t.removed.length || x.t.added.length)
-  const remHits = edited.reduce((a, x) => a + x.r.removedHits.length, 0), remTot = edited.reduce((a, x) => a + x.t.removed.length, 0)
-  const addHits = edited.reduce((a, x) => a + x.r.addedHits.length, 0), addTot = edited.reduce((a, x) => a + x.t.added.length, 0)
-  const pct = (h, n) => n ? Math.round(h / n * 100) + '%' : '—'
-  return `<div class="cube-agg">
-    <div><b>${tickets.length}</b><span>билетов</span></div>
-    <div><b>${avgFirst}%</b><span>чисел совпало в свой тираж</span></div>
-    <div><b>${avgAll}%</b><span>за все 10 тиражей</span></div>
-    <div><b>${colRows.length ? colRows.filter(x => x.r.colHit).length + '/' + colRows.length : '—'}</b><span>столб угадан</span></div>
-    <div><b>${parRows.length ? parRows.filter(x => x.r.parHit).length + '/' + parRows.length : '—'}</b><span>чётность угадана</span></div>
-    <div><b>${pct(remHits, remTot)}</b><span>убранные числа всё же вышли</span></div>
-    <div><b>${pct(addHits, addTot)}</b><span>добавленные числа вышли</span></div>
-  </div>
-  <p class="cube-hint">Норма для любых чисел — 25% (20 из 80). Выше нормы — ведёт, ниже — уводит. Правка куба полезна, если добавленные выходят чаще 25%, а убранные — реже.</p>`
+// ───── Стратегии ─────
+const STRATS = {
+  cube: { label: 'Куб', hint: 'что дал кубик Столото, без правок' },
+  kub1: { label: 'КУБ-1', hint: 'куб, поправленный по матрице столбов и чисел' },
+  iris: { label: 'Iris', hint: '7 повторов последних 6 тиражей, считается само' },
+  alex: { label: 'Александр', hint: 'ваши билеты' }
+}
+const strategyOf = t => t._strategy || (t.algo === 'КУБ-1' ? 'kub1' : t.algo === 'Александр' ? 'alex' : 'cube')
+const chip = k => `<span class="cube-chip s-${k}">${STRATS[k].label}</span>`
+
+// Правило Iris: из последних 6 тиражей — числа, выпавшие 2+ раза; берём те, что есть в 1–2 последних
+// тиражах, и собираем 7 штук плотной группой (общие ряды/столбы на поле 8×10).
+function irisPick(prev) {
+  if (prev.length < 6) return null
+  const win = prev.slice(-6)
+  const cnt = new Map()
+  win.forEach(d => clean(d.result_numbers).forEach(n => cnt.set(n, (cnt.get(n) || 0) + 1)))
+  const recent = new Set([...clean(prev.at(-1).result_numbers), ...clean(prev.at(-2).result_numbers)])
+  const rowOf = n => Math.ceil(n / 10)
+  let cand = [...recent].filter(n => (cnt.get(n) || 0) >= 2)
+  if (cand.length < 7) cand = [...cnt.keys()].filter(n => cnt.get(n) >= 2)
+  const pick = []
+  const score = n => cnt.get(n) * 10 + pick.filter(m => rowOf(m) === rowOf(n) || columnOf(m) === columnOf(n)).length * 4 + cand.filter(m => m !== n && (rowOf(m) === rowOf(n) || columnOf(m) === columnOf(n))).length
+  while (pick.length < 7 && cand.length) {
+    cand.sort((x, y) => score(y) - score(x) || x - y)
+    pick.push(cand.shift())
+  }
+  return pick.length === 7 ? pick.sort((x, y) => x - y) : null
 }
 
-let cacheHTML = ''
-let cacheAt = 0
-let inflight = null
+function irisTickets(draws, latestNo) {
+  const sorted = [...draws].sort((x, y) => Number(x.draw_number) - Number(y.draw_number))
+  const out = []
+  for (let i = 6; i <= sorted.length; i++) {
+    const target = i < sorted.length ? Number(sorted[i].draw_number) : latestNo + 1
+    const nums = irisPick(sorted.slice(0, i))
+    if (!nums) continue
+    out.push({ id: 'iris-' + target, _strategy: 'iris', target_draw_number: target, numbers: nums, cube_numbers: [], removed: [], added: [], columns: [], parity: null, status: 'track', track_draws: 10, algo: 'Iris', reason: 'Повторы последних 6 тиражей, взяты из двух свежих тиражей плотной группой' })
+  }
+  return out
+}
+
+// Тень «куба»: что дал бы кубик без правок (для честного сравнения с КУБ-1)
+function cubeShadows(tickets) {
+  return tickets.filter(t => strategyOf(t) === 'kub1' && t.cube_numbers.length).map(t => ({ ...t, id: 'shadow-' + t.id, _strategy: 'cube', _shadow: true, numbers: t.cube_numbers, removed: [], added: [] }))
+}
+
+function stratStats(list, byNo) {
+  const rows = list.flatMap(t => ticketRows(t, byNo).filter(r => !r.pending).map(r => ({ r, t })))
+  if (!rows.length) return { tickets: list.length, draws: 0 }
+  const pct = Math.round(rows.reduce((a, x) => a + x.r.hits.length / Math.max(1, x.t.numbers.length), 0) / rows.length * 100)
+  const best = rows.reduce((b, x) => (x.r.hits.length / x.t.numbers.length > b.v ? { v: x.r.hits.length / x.t.numbers.length, h: x.r.hits.length, n: x.t.numbers.length } : b), { v: -1 })
+  const big = rows.filter(x => x.r.hits.length >= Math.ceil(x.t.numbers.length * 0.6)).length
+  const col = rows.filter(x => x.r.colHit !== null), par = rows.filter(x => x.r.parHit !== null)
+  return { tickets: list.length, draws: rows.length, pct, best: `${best.h} из ${best.n}`, big,
+    col: col.length ? `${col.filter(x => x.r.colHit).length}/${col.length}` : '—',
+    par: par.length ? `${par.filter(x => x.r.parHit).length}/${par.length}` : '—' }
+}
+
+function compareHTML(groups, byNo) {
+  const rows = Object.keys(STRATS).map(k => {
+    const st = stratStats(groups[k] || [], byNo)
+    const tone = !st.draws ? '' : st.pct > 25 ? 'up' : st.pct < 25 ? 'down' : ''
+    return `<button class="cmp-row ${state.filter === k ? 'on' : ''}" data-cube-filter="${k}">
+      <span class="cmp-name">${chip(k)}<small>${STRATS[k].hint}</small></span>
+      <span class="cmp-pct ${tone}">${st.draws ? st.pct + '%' : '—'}<small>${st.draws ? (tone === 'up' ? 'ведёт' : tone === 'down' ? 'уводит' : 'норма') : 'ждём тиражи'}</small></span>
+      <span class="cmp-cell"><b>${st.tickets}</b><small>билетов</small></span>
+      <span class="cmp-cell"><b>${st.draws ? st.best : '—'}</b><small>лучший</small></span>
+      <span class="cmp-cell"><b>${st.draws ? st.big : '—'}</b><small>крупных</small></span>
+      <span class="cmp-cell"><b>${st.col}</b><small>столб</small></span>
+      <span class="cmp-cell"><b>${st.par}</b><small>чётность</small></span>
+    </button>`
+  }).join('')
+  return `<div class="cmp">${rows}</div>
+  <p class="cube-hint">% — сколько чисел билета совпадает в среднем за тираж. Норма для любых чисел — 25% (20 из 80): выше — стратегия ведёт, ниже — уводит. «Крупных» — тиражей, где совпало 60% билета и больше (например 5 из 7, 6 из 10). Нажмите на строку, чтобы оставить только эту стратегию.</p>`
+}
+
+const state = { filter: 'all' }
+let lastData = null
+
+function filtersHTML(groups) {
+  const keys = ['all', ...Object.keys(STRATS)]
+  return `<div class="cube-filters">${keys.map(k => `<button data-cube-filter="${k}" class="${state.filter === k ? 'on' : ''}">${k === 'all' ? 'Все' : STRATS[k].label}<i>${k === 'all' ? Object.values(groups).reduce((a, g) => a + g.length, 0) : (groups[k] || []).length}</i></button>`).join('')}</div>`
+}
+
+function render(data) {
+  const { groups, byNo } = data
+  let list = state.filter === 'all' ? [...(groups.kub1 || []), ...(groups.alex || []), ...(groups.cube || []).filter(t => !t._shadow), ...(groups.iris || []).slice(0, 12)] : [...(groups[state.filter] || [])]
+  if (state.filter === 'iris') list = list.slice(0, 40)
+  list.sort((x, y) => y.target_draw_number - x.target_draw_number)
+  list.forEach(t => { t._open = false })
+  if (list[0]) list[0]._open = true
+  const note = state.filter === 'iris' ? '<p class="cube-hint">Билеты Iris собираются автоматически на каждый тираж. Показаны последние 40.</p>'
+    : state.filter === 'cube' ? '<p class="cube-hint">Сюда входят и «тени» билетов КУБ-1 — что дал бы куб без правок.</p>' : ''
+  return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО · СТРАТЕГИИ</div><h2>Кто ведёт, кто уводит</h2></div><button class="icon-btn" data-cube-reload aria-label="Обновить">↻</button></div>
+    ${compareHTML(groups, byNo)}
+    ${filtersHTML(groups)}
+    ${note}
+    ${list.length ? list.map(t => ticketHTML(t, byNo)).join('') : '<p class="muted-text">Билетов этой стратегии пока нет.</p>'}`
+}
 
 async function build() {
   if (!supabase) throw new Error('Supabase не настроен')
-  const { data: tickets, error } = await supabase.from('cube_tickets').select('*').order('created_at', { ascending: false }).limit(60)
+  const { data: tickets, error } = await supabase.from('cube_tickets').select('*').order('created_at', { ascending: false }).limit(200)
   if (error) throw error
   const list = (tickets || []).map(t => ({ ...t, numbers: clean(t.numbers), cube_numbers: clean(t.cube_numbers), removed: clean(t.removed), added: clean(t.added), columns: (t.columns || []).map(Number) }))
-  if (!list.length) {
-    return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО</div><h2>Билетов пока нет</h2></div></div><p class="muted-text">Скажите Claude: «зайди в Кено, нажми кубик и отправь билет в Virtus Dei». Билет появится здесь, и приложение будет вести его 10 тиражей.</p>`
+  const { data: recent, error: rErr } = await supabase.from('draws').select('draw_number,draw_time,result_numbers,raw').order('draw_number', { ascending: false }).limit(90)
+  if (rErr) throw rErr
+  const latestNo = Number(recent?.[0]?.draw_number || 0)
+  const minTicket = list.length ? Math.min(...list.map(t => t.target_draw_number)) : latestNo
+  let older = []
+  const oldestRecent = Math.min(...(recent || []).map(d => Number(d.draw_number)))
+  if (minTicket < oldestRecent) {
+    const { data: o, error: oErr } = await supabase.from('draws').select('draw_number,draw_time,result_numbers,raw').gte('draw_number', minTicket).lt('draw_number', oldestRecent)
+    if (oErr) throw oErr
+    older = o || []
   }
-  const min = Math.min(...list.map(t => t.target_draw_number))
-  const max = Math.max(...list.map(t => t.target_draw_number + t.track_draws - 1))
-  const { data: draws, error: dErr } = await supabase.from('draws').select('draw_number,draw_time,result_numbers,raw').gte('draw_number', min).lte('draw_number', max)
-  if (dErr) throw dErr
-  const byNo = new Map((draws || []).map(d => [Number(d.draw_number), d]))
-  list[0]._open = true
-  return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО · ХОД ПО ТИРАЖАМ</div><h2>Что даёт куб</h2></div><button class="icon-btn" data-cube-reload aria-label="Обновить">↻</button></div>
-    ${aggregate(list, byNo)}
-    ${list.map(t => ticketHTML(t, byNo)).join('')}`
+  const all = [...older, ...(recent || [])]
+  const byNo = new Map(all.map(d => [Number(d.draw_number), d]))
+  const iris = irisTickets(recent || [], latestNo).sort((x, y) => y.target_draw_number - x.target_draw_number)
+  const groups = { cube: [], kub1: [], iris, alex: [] }
+  list.forEach(t => groups[strategyOf(t)].push(t))
+  groups.cube.push(...cubeShadows(list))
+  return { groups, byNo }
 }
-
 function paint(root, html) {
   root.dataset.filled = '1'
   root.innerHTML = html
   root.querySelector('[data-cube-reload]')?.addEventListener('click', () => { cacheAt = 0; refresh() })
+  root.querySelectorAll('[data-cube-filter]').forEach(b => b.addEventListener('click', () => {
+    const k = b.dataset.cubeFilter
+    state.filter = state.filter === k && k !== 'all' ? 'all' : k
+    if (lastData) { cacheHTML = render(lastData); paint(root, cacheHTML) }
+  }))
 }
 
 function refresh() {
   if (inflight) return inflight
   inflight = build()
-    .then(html => { cacheHTML = html; cacheAt = Date.now() })
+    .then(data => { lastData = data; cacheHTML = render(data); cacheAt = Date.now() })
     .catch(e => { cacheHTML = `<p class="muted-text">Не удалось загрузить билеты куба: ${esc(e.message || e)}</p>`; cacheAt = Date.now() })
     .finally(() => {
       inflight = null

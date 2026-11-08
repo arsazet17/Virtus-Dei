@@ -28,3 +28,35 @@
 .cube-ball.removed{opacity:.45;text-decoration:line-through}
 .cube-change{font-size:12px;color:var(--amber);margin-top:4px}
 .cube-change.same{color:var(--muted)}
+
+/* стратегии */
+.cube-chip{display:inline-flex;align-items:center;font-size:11px;font-weight:800;letter-spacing:.02em;padding:3px 9px;border-radius:999px;border:1px solid;white-space:nowrap}
+.cube-chip.s-cube{color:#78b7ff;border-color:#2d5d93;background:#0f2238}
+.cube-chip.s-kub1{color:#f4c85a;border-color:#7a6224;background:#2a2410}
+.cube-chip.s-iris{color:#e58bff;border-color:#6d3a85;background:#24122c}
+.cube-chip.s-alex{color:#55e08b;border-color:#24704a;background:#102a1d}
+.cmp{display:flex;flex-direction:column;gap:8px;margin:10px 0 4px}
+.cmp-row{display:grid;grid-template-columns:minmax(150px,1.6fr) .9fr repeat(5,minmax(56px,.7fr));align-items:center;gap:6px;width:100%;text-align:left;background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:10px 12px;color:var(--text);cursor:pointer;font:inherit}
+.cmp-row.on{border-color:var(--blue);box-shadow:0 0 0 1px var(--blue) inset}
+.cmp-row small{display:block;font-size:10px;color:var(--muted);font-weight:500;margin-top:3px;line-height:1.25}
+.cmp-name small{max-width:220px}
+.cmp-pct{font-size:22px;font-weight:900;line-height:1}
+.cmp-pct.up{color:var(--green)}
+.cmp-pct.down{color:var(--red)}
+.cmp-cell b{font-size:14px}
+.cube-filters{display:flex;gap:6px;overflow-x:auto;margin:14px 0 6px;padding-bottom:2px}
+.cube-filters button{flex:0 0 auto;border:1px solid var(--line);background:#0b1828;color:#c7d5e4;border-radius:999px;padding:7px 12px;font-size:12px;font-weight:800;cursor:pointer}
+.cube-filters button i{font-style:normal;color:var(--muted);margin-left:6px;font-weight:600}
+.cube-filters button.on{background:linear-gradient(180deg,#3295ff,#1674e8);border-color:#469fff;color:#fff}
+.cube-filters button.on i{color:#dbeaff}
+@media(max-width:620px){
+  .cmp-row{grid-template-columns:1fr auto;row-gap:8px}
+  .cmp-name{grid-column:1}
+  .cmp-pct{grid-column:2;grid-row:1;text-align:right}
+  .cmp-cell{grid-row:2;display:inline-block}
+  .cmp-row{grid-template-areas:none}
+  .cmp-row .cmp-cell{grid-column:auto}
+  .cmp-row{grid-template-columns:repeat(5,1fr)}
+  .cmp-name{grid-column:1 / span 3}
+  .cmp-pct{grid-column:4 / span 2}
+}
