@@ -72,3 +72,15 @@
 .cube-table td.cube-win.good{color:var(--green)}
 .cmp-money{color:var(--gold)!important}
 @media(max-width:620px){.cube-table th,.cube-table td{padding:7px 6px}}
+
+/* Iris-разбивка */
+.cube-chip.s-isplit{color:#ff9fd6;border-color:#8a3a68;background:#2c1222}
+.cube-ball.anchor{border-color:var(--gold);box-shadow:0 0 0 2px var(--gold) inset;color:var(--gold)}
+.split-parts{display:flex;flex-direction:column;gap:4px;margin:4px 0 6px}
+.split-part{display:flex;align-items:center;gap:8px;font-size:13px}
+.split-key{min-width:74px;color:var(--muted);font-size:12px}
+.split-nums b{font-weight:800;margin-right:4px}
+.split-nums b.anc{color:var(--gold)}
+.split-won{margin-left:auto;font-weight:800;color:var(--muted);white-space:nowrap}
+.split-won.some{color:var(--gold)}
+.split-won.plus{color:var(--green)}

@@ -117,12 +117,42 @@ function ticketHTML(t, drawsByNo) {
   </details>`
 }
 
+function splitHTML(t, byNo) {
+  const partRows = t.parts.map(p => ticketRows({ ...t, numbers: p.nums }, byNo))
+  const base = partRows[0]
+  const allHits = new Set(partRows.flat().flatMap(r => r.hits || []))
+  const balls = t.numbers.map(n => `<span class="cube-ball${allHits.has(n) ? ' hit' : ''}${n === t.anchor ? ' anchor' : ''}">${n}</span>`).join('')
+  const pm = t.parts.map((p, i) => money(partRows[i], { ...t, numbers: p.nums }))
+  const won = pm.reduce((a, m) => a + m.won, 0), spent = pm.reduce((a, m) => a + m.spent, 0)
+  const badge = spent ? `<span class="cube-money ${won > spent ? 'plus' : won ? 'some' : ''}">${won ? '+' + rub(won) : '0 ₽'}</span>` : ''
+  const partsLine = t.parts.map((p, i) => `<div class="split-part"><span class="split-key">${p.label}</span><span class="split-nums">${p.nums.map(n => `<b class="${n === t.anchor ? 'anc' : ''}">${n}</b>`).join(' ')}</span>${pm[i].spent ? `<span class="split-won ${pm[i].won > pm[i].spent ? 'plus' : pm[i].won ? 'some' : ''}">${rub(pm[i].won)}</span>` : ''}</div>`).join('')
+  const done = base.filter(r => !r.pending).length
+  const body = base.map((r, k) => {
+    if (r.pending) return `<tr class="pending"><td>№${r.no}</td><td colspan="4">ожидание</td></tr>`
+    const cells = t.parts.map((p, i) => { const pr = partRows[i][k]; const w = rowWin(pr, { ...t, numbers: p.nums }); return `<td class="${w ? 'good' : ''}"><b>${pr.hits.length}</b>${w ? `<small>+${rub(w)}</small>` : ''}</td>` }).join('')
+    const w = t.parts.reduce((a, p, i) => a + rowWin(partRows[i][k], { ...t, numbers: p.nums }), 0)
+    return `<tr><td>№${r.no}<small>${timeMsk(r.time)}</small></td>${cells}<td class="cube-win${w ? ' good' : ''}">${w ? '+' + rub(w) : '—'}</td></tr>`
+  }).join('')
+  return `<details class="cube-ticket"${t._open ? ' open' : ''}>
+    <summary>
+      <div class="cube-top">${chip('isplit')}<b>№${t.target_draw_number}</b><span class="cube-status">авто</span>${badge}<i>⌄</i></div>
+      <div class="cube-balls">${balls}</div>
+      <div class="split-parts">${partsLine}</div>
+      <div class="cube-sum">${done ? `${done}/${base.length} тир · опорное ${t.anchor}` : 'ждём первый тираж'}</div>
+      ${spent ? `<div class="cube-money-line">Выиграно <b>${rub(won)}</b> из ${rub(spent)} ставок${won > spent ? ` · плюс ${rub(won - spent)}` : ''}</div>` : ''}
+    </summary>
+    <table class="cube-table"><thead><tr><th>Тираж</th><th>А</th><th>Б</th><th>4-ка</th><th>Выигрыш</th></tr></thead><tbody>${body}</tbody></table>
+    <div class="cube-note">${esc(t.reason)}</div>
+  </details>`
+}
+
 // ───── Стратегии ─────
 const STRATS = {
   cube: { label: 'Куб', hint: 'что дал кубик Столото, без правок' },
   kub1: { label: 'КУБ-1', hint: 'куб, поправленный по матрице столбов и чисел' },
   iris: { label: 'Iris', hint: '7 повторов последних 6 тиражей, считается само' },
-  alex: { label: 'Александр', hint: 'ваши билеты' }
+  alex: { label: 'Александр', hint: 'ваши билеты' },
+  isplit: { label: 'Iris-разбивка', hint: 'комбинация Iris, разбитая на 2 тройки и 1 четвёрку вокруг опорного числа' }
 }
 const strategyOf = t => t._strategy || (t.algo === 'КУБ-1' ? 'kub1' : t.algo === 'Александр' ? 'alex' : 'cube')
 const chip = k => `<span class="cube-chip s-${k}">${STRATS[k].label}</span>`
@@ -147,6 +177,27 @@ function irisPick(prev) {
   return pick.length === 7 ? pick.sort((x, y) => x - y) : null
 }
 
+// Разбивка Iris: опорное число — самое частое за 6 тиражей (при равенстве — выпавшее в последнем);
+// к нему добираем числа по частоте и близости на поле (тот же ряд/столб). Тройка А = опора + 1-е и 2-е,
+// тройка Б = опора + 3-е и 4-е, четвёрка = опора + 1-е, 2-е, 3-е.
+function splitPick(nums, prev) {
+  const win = prev.slice(-6)
+  const cnt = new Map()
+  win.forEach(d => clean(d.result_numbers).forEach(n => cnt.set(n, (cnt.get(n) || 0) + 1)))
+  const last = new Set(clean(prev.at(-1).result_numbers))
+  const rowOf = n => Math.ceil(n / 10)
+  const base = n => (cnt.get(n) || 0) * 10 + (last.has(n) ? 3 : 0)
+  const anchor = [...nums].sort((x, y) => base(y) - base(x) || x - y)[0]
+  const near = n => (rowOf(n) === rowOf(anchor) ? 6 : 0) + (columnOf(n) === columnOf(anchor) ? 6 : 0)
+  const r = nums.filter(n => n !== anchor).sort((x, y) => base(y) + near(y) - base(x) - near(x) || x - y)
+  const srt = a => a.sort((x, y) => x - y)
+  return { anchor, parts: [
+    { key: 'А', label: 'Тройка А', nums: srt([anchor, r[0], r[1]]) },
+    { key: 'Б', label: 'Тройка Б', nums: srt([anchor, r[2], r[3]]) },
+    { key: '4', label: 'Четвёрка', nums: srt([anchor, r[0], r[1], r[2]]) }
+  ] }
+}
+
 function irisTickets(draws, latestNo) {
   const sorted = [...draws].sort((x, y) => Number(x.draw_number) - Number(y.draw_number))
   const out = []
@@ -154,6 +205,8 @@ function irisTickets(draws, latestNo) {
     const target = i < sorted.length ? Number(sorted[i].draw_number) : latestNo + 1
     const nums = irisPick(sorted.slice(0, i))
     if (!nums) continue
+    const sp = splitPick(nums, sorted.slice(0, i))
+    out.push({ id: 'isplit-' + target, _strategy: 'isplit', target_draw_number: target, numbers: nums, anchor: sp.anchor, parts: sp.parts, cube_numbers: [], removed: [], added: [], columns: [], parity: null, status: 'track', track_draws: 10, algo: 'Iris-разбивка', reason: `Опорное число ${sp.anchor} — самое частое за 6 тиражей. Тройки и четвёрка собраны вокруг него по частоте и близости на поле. Ставка 300 ₽ за тираж (3 билета по 100 ₽).` })
     out.push({ id: 'iris-' + target, _strategy: 'iris', target_draw_number: target, numbers: nums, cube_numbers: [], removed: [], added: [], columns: [], parity: null, status: 'track', track_draws: 10, algo: 'Iris', reason: 'Повторы последних 6 тиражей, взяты из двух свежих тиражей плотной группой' })
   }
   return out
@@ -164,7 +217,9 @@ function cubeShadows(tickets) {
   return tickets.filter(t => strategyOf(t) === 'kub1' && t.cube_numbers.length).map(t => ({ ...t, id: 'shadow-' + t.id, _strategy: 'cube', _shadow: true, numbers: t.cube_numbers, removed: [], added: [] }))
 }
 
-function stratStats(list, byNo) {
+const expandParts = list => list.flatMap(t => t.parts ? t.parts.map(p => ({ ...t, numbers: p.nums, parts: null })) : [t])
+function stratStats(list0, byNo) {
+  const list = expandParts(list0)
   const rows = list.flatMap(t => ticketRows(t, byNo).filter(r => !r.pending).map(r => ({ r, t })))
   if (!rows.length) return { tickets: list.length, draws: 0 }
   const pct = Math.round(rows.reduce((a, x) => a + x.r.hits.length / Math.max(1, x.t.numbers.length), 0) / rows.length * 100)
@@ -172,7 +227,7 @@ function stratStats(list, byNo) {
   const big = rows.filter(x => x.r.hits.length >= Math.ceil(x.t.numbers.length * 0.6)).length
   const col = rows.filter(x => x.r.colHit !== null), par = rows.filter(x => x.r.parHit !== null)
   const won = rows.reduce((a, x) => a + rowWin(x.r, x.t), 0), spent = rows.reduce((a, x) => a + ticketCost(x.t), 0)
-  return { won, spent, tickets: list.length, draws: rows.length, pct, best: `${best.h} из ${best.n}`, big,
+  return { won, spent, tickets: list0.length, draws: rows.length, pct, best: `${best.h} из ${best.n}`, big,
     col: col.length ? `${col.filter(x => x.r.colHit).length}/${col.length}` : '—',
     par: par.length ? `${par.filter(x => x.r.parHit).length}/${par.length}` : '—' }
 }
@@ -205,18 +260,19 @@ function filtersHTML(groups) {
 
 function render(data) {
   const { groups, byNo } = data
-  let list = state.filter === 'all' ? [...(groups.kub1 || []), ...(groups.alex || []), ...(groups.cube || []).filter(t => !t._shadow), ...(groups.iris || []).slice(0, 12)] : [...(groups[state.filter] || [])]
-  if (state.filter === 'iris') list = list.slice(0, 40)
+  let list = state.filter === 'all' ? [...(groups.kub1 || []), ...(groups.alex || []), ...(groups.cube || []).filter(t => !t._shadow), ...(groups.iris || []).slice(0, 8), ...(groups.isplit || []).slice(0, 8)] : [...(groups[state.filter] || [])]
+  if (state.filter === 'iris' || state.filter === 'isplit') list = list.slice(0, 40)
   list.sort((x, y) => y.target_draw_number - x.target_draw_number)
   list.forEach(t => { t._open = false })
   if (list[0]) list[0]._open = true
   const note = state.filter === 'iris' ? '<p class="cube-hint">Билеты Iris собираются автоматически на каждый тираж. Показаны последние 40.</p>'
+    : state.filter === 'isplit' ? '<p class="cube-hint">Та же комбинация Iris, но вместо одного билета на 7 чисел — 3 билета: две тройки и четвёрка вокруг опорного числа (золотой шар). Каждый билет по 100 ₽, итого 300 ₽ за тираж. Архив идёт сам, показаны последние 40.</p>'
     : state.filter === 'cube' ? '<p class="cube-hint">Сюда входят и «тени» билетов КУБ-1 — что дал бы куб без правок.</p>' : ''
   return `<div class="panel-head"><div><div class="eyebrow">КУБ СТОЛОТО · СТРАТЕГИИ</div><h2>Кто ведёт, кто уводит</h2></div><button class="icon-btn" data-cube-reload aria-label="Обновить">↻</button></div>
     ${compareHTML(groups, byNo)}
     ${filtersHTML(groups)}
     ${note}
-    ${list.length ? list.map(t => ticketHTML(t, byNo)).join('') : '<p class="muted-text">Билетов этой стратегии пока нет.</p>'}`
+    ${list.length ? list.map(t => t.parts ? splitHTML(t, byNo) : ticketHTML(t, byNo)).join('') : '<p class="muted-text">Билетов этой стратегии пока нет.</p>'}`
 }
 
 async function build() {
@@ -237,8 +293,8 @@ async function build() {
   }
   const all = [...older, ...(recent || [])]
   const byNo = new Map(all.map(d => [Number(d.draw_number), d]))
-  const iris = irisTickets(recent || [], latestNo).sort((x, y) => y.target_draw_number - x.target_draw_number)
-  const groups = { cube: [], kub1: [], iris, alex: [] }
+  const auto = irisTickets(recent || [], latestNo).sort((x, y) => y.target_draw_number - x.target_draw_number)
+  const groups = { cube: [], kub1: [], iris: auto.filter(t => t._strategy === 'iris'), alex: [], isplit: auto.filter(t => t._strategy === 'isplit') }
   list.forEach(t => groups[strategyOf(t)].push(t))
   groups.cube.push(...cubeShadows(list))
   return { groups, byNo }
